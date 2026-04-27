@@ -23,6 +23,8 @@ if (-not $VerifiedRoot) {
 }
 $ParserPath = Join-Path $PipelineRoot "parse_identity.py"
 $AuditRoot = Join-Path $StateRoot "audit"
+$LogRoot = Join-Path $StateRoot "logs"
+$LogPath = Join-Path $LogRoot "pipeline.log"
 $PythonExe = "python"
 
 function Ensure-Directory {
@@ -164,6 +166,27 @@ function Invoke-GiteaApi {
         [object]$Body = $null
     )
 
+    # Test-only mock: skip live HTTP calls when LLM_WIKI_GITEA_MOCK_MODE is set.
+    # Mode "local_only" returns canned "no remote PR / branch not found" shapes
+    # so the local-git promotion path can be exercised end-to-end in CI without
+    # contacting any Gitea instance.  Production runs must NOT set this env var.
+    if ($env:LLM_WIKI_GITEA_MOCK_MODE -eq "local_only") {
+        if ($Method -eq "GET" -and $Endpoint -match "/branches/") {
+            return @{
+                StatusCode = 404
+                Data       = $null
+                Raw        = "mock(local_only): branch not found"
+                Error      = $true
+            }
+        }
+        return @{
+            StatusCode = 200
+            Data       = @()
+            Raw        = "[]"
+            Error      = $false
+        }
+    }
+
     $baseUrl = $GiteaConfig.BaseUrl.TrimEnd('/')
     $uri = "{0}/api/v1/{1}" -f $baseUrl, $Endpoint.TrimStart('/')
 
@@ -192,12 +215,14 @@ function Invoke-GiteaApi {
                 StatusCode = $response.StatusCode
                 Data       = ($response.Content | ConvertFrom-Json)
                 Raw        = $response.Content
+                Error      = $false
             }
         }
         return @{
             StatusCode = $response.StatusCode
             Data       = $null
             Raw        = ""
+            Error      = $false
         }
     }
     catch {
@@ -541,6 +566,153 @@ function Write-PendingPrEntry {
 }
 
 # ---------------------------------------------------------------------------
+# Local Git Promotion (TD-002 part 1)
+# ---------------------------------------------------------------------------
+# Performs the local half of the promotion: create an isolated git worktree,
+# copy the article from provisional/ to verified/, commit on a new branch.
+# The caller's working tree is never modified - all operations live in a
+# temp worktree that is left in place for the push step (TD-002 part 2).
+#
+# On any failure: emits a PROMOTION_LOCAL_GIT_FAILED operational_fault to
+# the JSONL pipeline log, attempts cleanup of the worktree and any local
+# branch we created, then re-throws.  Run-Validator.ps1's catch block emits
+# the standard F7 promotion_gated_pending_remote_wiring fault on top of that.
+
+function Write-PromotionFault {
+    param(
+        [string]$LogPath,
+        [string]$Step,
+        [string]$BranchAlias,
+        [string]$SourceId,
+        [string]$DocumentHash,
+        [string]$Stderr
+    )
+
+    if (-not $LogPath) {
+        return
+    }
+    try {
+        $logDir = Split-Path -Parent $LogPath
+        if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        }
+        $record = [ordered]@{
+            timestamp_utc  = (Get-Date).ToUniversalTime().ToString("o")
+            event_type     = "operational_fault"
+            fault_category = "PROMOTION_LOCAL_GIT_FAILED"
+            fmea_ref       = "F7"
+            step           = $Step
+            branch_alias   = $BranchAlias
+            source_id      = $SourceId
+            document_hash  = $DocumentHash
+            stderr         = $Stderr
+        }
+        $json = $record | ConvertTo-Json -Depth 6 -Compress
+        Add-Content -LiteralPath $LogPath -Value $json -Encoding UTF8
+    }
+    catch {
+        # Logging must never crash the rollback path.
+    }
+}
+
+function Invoke-LocalGitPromotion {
+    param(
+        [string]$ArticleSource,
+        [string]$DestinationRelative,
+        [string]$BranchAlias,
+        [string]$BaseBranch,
+        [string]$RepoRoot,
+        [string]$SourceId,
+        [string]$DocumentHash,
+        [string]$LogPath
+    )
+
+    $tempBase = [System.IO.Path]::GetTempPath()
+    $worktreeName = "llm-wiki-promote-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 12)
+    $worktreePath = Join-Path $tempBase $worktreeName
+
+    # Pre-flight: the base branch must exist locally.  We do not fetch in
+    # part 1 - that's a part 2 concern.
+    & git -C $RepoRoot rev-parse --verify "$BaseBranch^{commit}" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        $stderr = "Base branch '$BaseBranch' not resolvable in $RepoRoot (git rev-parse --verify exited $LASTEXITCODE)"
+        Write-PromotionFault -LogPath $LogPath -Step "verify_base_branch" `
+            -BranchAlias $BranchAlias -SourceId $SourceId -DocumentHash $DocumentHash `
+            -Stderr $stderr
+        throw "Local git promotion failed: $stderr"
+    }
+
+    # Pre-flight: refuse if branch already exists locally (fail-loudly default).
+    & git -C $RepoRoot rev-parse --verify "refs/heads/$BranchAlias" 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $stderr = "Local branch '$BranchAlias' already exists in $RepoRoot"
+        Write-PromotionFault -LogPath $LogPath -Step "branch_already_exists" `
+            -BranchAlias $BranchAlias -SourceId $SourceId -DocumentHash $DocumentHash `
+            -Stderr $stderr
+        throw "Local git promotion failed: $stderr. Investigate or remove the branch before retrying."
+    }
+
+    $worktreeAdded = $false
+    try {
+        $addOutput = & git -C $RepoRoot worktree add $worktreePath -b $BranchAlias $BaseBranch 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "git worktree add failed (exit ${LASTEXITCODE}): $($addOutput | Out-String)"
+        }
+        $worktreeAdded = $true
+
+        $destAbs = Join-Path $worktreePath $DestinationRelative
+        $destDir = Split-Path -Parent $destAbs
+        if ($destDir -and -not (Test-Path -LiteralPath $destDir)) {
+            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+        }
+
+        Copy-Item -LiteralPath $ArticleSource -Destination $destAbs -Force
+
+        $addFileOutput = & git -C $worktreePath add -- $DestinationRelative 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "git add failed (exit ${LASTEXITCODE}): $($addFileOutput | Out-String)"
+        }
+
+        $shortHash = $DocumentHash.Substring(0, 8)
+        $commitMessage = "auto-promote: $SourceId ($shortHash)"
+        $commitOutput = & git -C $worktreePath commit -m $commitMessage 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "git commit failed (exit ${LASTEXITCODE}): $($commitOutput | Out-String)"
+        }
+
+        $commitSha = (& git -C $worktreePath rev-parse HEAD 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $commitSha) {
+            throw "git rev-parse HEAD failed in worktree (exit ${LASTEXITCODE})"
+        }
+
+        return @{
+            Success      = $true
+            WorktreePath = $worktreePath
+            CommitSha    = $commitSha
+            BranchAlias  = $BranchAlias
+        }
+    }
+    catch {
+        $errMessage = $_.Exception.Message
+
+        # Best-effort rollback: remove the worktree and the branch we created.
+        if ($worktreeAdded) {
+            & git -C $RepoRoot worktree remove --force $worktreePath 2>&1 | Out-Null
+            & git -C $RepoRoot branch -D $BranchAlias 2>&1 | Out-Null
+        }
+        if (Test-Path -LiteralPath $worktreePath) {
+            Remove-Item -LiteralPath $worktreePath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        Write-PromotionFault -LogPath $LogPath -Step "local_git_promotion" `
+            -BranchAlias $BranchAlias -SourceId $SourceId -DocumentHash $DocumentHash `
+            -Stderr $errMessage
+
+        throw "Invoke-LocalGitPromotion failed: $errMessage"
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Ledger Root (shared with Run-Validator.ps1 via convention)
 # ---------------------------------------------------------------------------
 $LedgerRoot = Join-Path $StateRoot "ledger"
@@ -551,6 +723,7 @@ $LedgerRoot = Join-Path $StateRoot "ledger"
 
 Ensure-Directory -Path $AuditRoot
 Ensure-Directory -Path $LedgerRoot
+Ensure-Directory -Path $LogRoot
 
 if (-not (Test-Path -LiteralPath $ArticlePath)) {
     throw "Article not found: $ArticlePath"
@@ -595,6 +768,8 @@ $preview = [ordered]@{
     pr_gated_required          = $true
     tree_sha_equivalence_rule  = "remote branch accepted only when base SHA and tree SHA match local intent"
     declined_pr_rule           = "state=closed AND merged=false routes to declined_by_human and blocks re-promotion until hash or digest changes"
+    local_commit_sha           = $null
+    worktree_path              = $null
     generated_utc              = (Get-Date).ToUniversalTime().ToString("o")
 }
 
@@ -763,69 +938,57 @@ Audit preview: $auditFile
 }
 
 # ---------------------------------------------------------------------------
-# Step 3: Create PR
+# Step 3: Local Git Promotion (TD-002 part 1)
 # ---------------------------------------------------------------------------
-# OQ-2 RESOLVED (Phase 1.5): Branch protection confirmed on the
-# configured external Gitea instance:
-#   enable_push=false, required_approvals=1, enable_force_push=false
-#
-# REMAINING GATE: The git-push-to-create-branch step is not yet wired.
-# The pipeline needs to:
-#   1. Create the branch locally with the promoted content
-#   2. Push the branch to the remote
-#   3. Create the PR via API
-# Step 1 requires local git operations (checkout, copy file, commit) that
-# interact with the working tree.  These need workspace rollback protection
-# (the F7 failure mode) which is not yet implemented.
-#
-# The throw below stays until the local git operations and rollback are wired.
+# Create an isolated git worktree, copy the article from provisional/ to
+# verified/, and commit on the deterministic branch alias.  The user's
+# working tree is never touched.  The worktree is left in place on success
+# so the push step (TD-002 part 2) has a checkout to push from.
 
+$localGitResult = Invoke-LocalGitPromotion `
+    -ArticleSource $ArticlePath `
+    -DestinationRelative $repoRelativeDestination `
+    -BranchAlias $branchAlias `
+    -BaseBranch $giteaConfig.BaseBranch `
+    -RepoRoot $RepoRoot `
+    -SourceId $sourceId `
+    -DocumentHash $documentHash `
+    -LogPath $LogPath
+
+# Update the audit preview with the populated local-git fields and rewrite.
+$preview['local_commit_sha'] = $localGitResult.CommitSha
+$preview['worktree_path']    = $localGitResult.WorktreePath
+Set-Content -LiteralPath $auditFile -Value ($preview | ConvertTo-Json -Depth 8) -Encoding UTF8
+
+# ---------------------------------------------------------------------------
+# Step 4: Push + PR creation (TD-002 part 2 - not yet wired)
+# ---------------------------------------------------------------------------
+# OQ-2 RESOLVED (Phase 1.5).  Branch protection verified on the configured
+# external Gitea instance: enable_push=false, required_approvals=1,
+# enable_force_push=false.
+#
+# Local git operations are now wired (Phase 1.8 / TD-002 part 1).  Engineering
+# Prompt 03b will: push the branch from the worktree, create the PR via the
+# Gitea API, write the pending_pr entry, and remove the worktree.  Until then
+# the gate stays fail-closed via the throw below.
+
+$shortCommit = $localGitResult.CommitSha.Substring(0, 8)
 throw @"
-Promote-ToVerified.ps1: Live PR creation gate — git push path not yet wired.
+promotion_gated_pending_remote_wiring
 
-OQ-2 is resolved. Branch protection verified:
-  enable_push=false, required_approvals=1, enable_force_push=false
+Local git promotion complete (branch=$branchAlias, commit=$shortCommit, worktree=$($localGitResult.WorktreePath)); push not yet wired (TD-002 part 2).
 
 All preflight checks passed:
-  - Gitea credentials:  configured ($($giteaConfig.BaseUrl))
+  - Gitea credentials:      configured ($($giteaConfig.BaseUrl))
   - Startup reconciliation: $($startupResult.Reconciled) entries reconciled, $($startupResult.Cleaned) branches cleaned
-  - Declined-PR check:  clear
-  - Remote branch check: branch does not exist (clean slate)
-  - Branch alias:       $branchAlias
-  - Local fingerprint:  $treeFingerprint
+  - Declined-PR check:      clear
+  - Remote branch check:    branch does not exist (clean slate)
+  - Local git promotion:    succeeded (commit $shortCommit on $branchAlias)
 
 Remaining before activation:
-  1. Wire local git operations (branch, copy, commit, push)
-  2. Implement workspace rollback for interrupted push (F7)
+  1. Push the worktree branch to the remote (TD-002 part 2)
+  2. Create the PR via Gitea API (TD-002 part 2)
   3. Implement tree-SHA equivalence check (P0-8)
 
 Audit preview: $auditFile
 "@
-
-# --- Below this line: post-gate activation code (currently unreachable) ---
-# When the local git + rollback path is wired, replace the throw above
-# with the following flow:
-#
-# $prTitle = "auto-promote: $sourceId ($($documentHash.Substring(0, 8)))"
-# $prBody = @"
-# Automated promotion from ``provisional/`` to ``verified/``.
-#
-# | Field | Value |
-# |---|---|
-# | source_id | $sourceId |
-# | document_hash | $($documentHash.Substring(0, 8))... |
-# | branch | $branchAlias |
-# | tree_fingerprint | $($treeFingerprint.Substring(0, 12))... |
-# | generated_utc | $(Get-Date -Format o) |
-# "@
-#
-# $prResult = New-GiteaPullRequest -GiteaConfig $giteaConfig -Title $prTitle -HeadBranch $branchAlias -BodyText $prBody
-# if ($prResult.Error) {
-#     throw "PR creation failed: $($prResult.Raw)"
-# }
-#
-# Write-PendingPrEntry -StateRoot $StateRoot -BranchAlias $branchAlias -SourceId $sourceId -DocumentHash $documentHash -PrNumber $prResult.Data.number | Out-Null
-# Write-Host "PR #$($prResult.Data.number) created for $branchAlias"
-# exit 0
-# Write-Host "PR #$($prResult.Data.number) created for $branchAlias"
-# exit 0

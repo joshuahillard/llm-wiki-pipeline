@@ -107,6 +107,18 @@
 |----|------|--------------|-----------|
 | CTX-001 | `integration/CTX-001-digest-change-test.md` | End-to-end orchestration: parse -> validate -> ledger write -> audit -> F7 promotion gate. Exercises approve / reject / escalate paths via `LLM_WIKI_STUB_DECISION` env override, plus a determinism check (approve repeated). Implemented as the `integration` stage in `run_harness.py` (Phase 1.7). | Automated — runs on `python run_harness.py --stage all`. Requires pwsh (PowerShell 7+) on PATH; stage is skipped with explicit reason if pwsh is missing. The `integration/CTX-001-README.md` is preserved as a Phase 0.6 historical artifact; its digest-rotation premise is moot under current code (no caching layer to invalidate, ledger writes are append-only via timestamped filenames). |
 
+## Promote-local Tests (TD-002 part 1)
+
+Exercises `Promote-ToVerified.ps1` directly (not via `Run-Validator.ps1`) to verify the local-git half of TD-002: temp-worktree creation, article copy from `provisional/` to `verified/`, commit on a deterministic branch alias, audit-preview field population (`local_commit_sha`, `worktree_path`), and JSONL fault emission on rollback. Reuses `approve/A-001-clean-article.md` as input — no new fixture files.
+
+| Path | What It Tests |
+|------|--------------|
+| dry-run | `-DryRun` produces audit preview with new `local_commit_sha`/`worktree_path` keys (null in dry-run); no JSONL faults |
+| live (mocked Gitea) | Worktree created in `%TEMP%\llm-wiki-promote-<guid>`, article copied, commit on `auto/<source>/<8-hex>`, post-local-git throw fires with `promotion_gated_pending_remote_wiring` |
+| rerun | Branch already exists → fail-loudly path → `PROMOTION_LOCAL_GIT_FAILED` JSONL fault with `step=branch_already_exists`, no new worktree created |
+
+Live Gitea calls are mocked via `LLM_WIKI_GITEA_MOCK_MODE=local_only` (test-only env var; `Invoke-GiteaApi` returns canned "no remote PR / branch not found" responses). Implemented as the `promote-local` stage in `run_harness.py` (Phase 1.8). 32 assertions; runs on `python run_harness.py --stage all` and `--stage promote-local`. Requires pwsh; skipped with explicit reason if pwsh is missing.
+
 
 ## Coverage Summary
 

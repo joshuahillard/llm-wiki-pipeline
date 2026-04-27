@@ -132,6 +132,22 @@ _REQUIRED_AUDIT_FIELDS = (
     "local_tree_fingerprint",
     "destination_path",
 )
+# ---------------------------------------------------------------------------
+# Promote-local stage constants
+# ---------------------------------------------------------------------------
+# The promote-local stage exercises Promote-ToVerified.ps1 directly (not via
+# Run-Validator.ps1) to verify the local-git half of TD-002: branch + copy +
+# commit in an isolated worktree, audit-preview population, and JSONL fault
+# emission on rollback.  No live Gitea calls are made: LLM_WIKI_GITEA_MOCK_MODE
+# returns canned "no remote PR / branch not found" shapes.
+PROMOTE_TIMEOUT_SECONDS = 60
+PROMOTE_SCRIPT_PATH = SCRIPT_DIR.parent / "Promote-ToVerified.ps1"
+PARSE_IDENTITY_PATH = SCRIPT_DIR.parent / "parse_identity.py"
+PROMOTE_LOCAL_FIXTURE_REL = "approve/A-001-clean-article.md"
+_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_BRANCH_ALIAS_PATTERN = re.compile(r"^auto/[A-Za-z0-9_\-]+/[0-9a-f]{8}$")
+
+
 _DETERMINISM_STRIP_FIELDS = frozenset({
     "timestamp_utc",
     "created_utc",
@@ -1335,12 +1351,495 @@ def run_integration_tests(integration_fixtures):
     return all_results, None
 
 
+# ---------------------------------------------------------------------------
+# Promote-local stage helpers (TD-002 part 1)
+# ---------------------------------------------------------------------------
+def _setup_promote_local_repo(work_root, fixture_path):
+    """Initialize a temp git repo for the promote-local stage.
+
+    Creates work_root/<.git, pipeline/{provisional,verified}, parse_identity.py,
+    Promote-ToVerified.ps1>, makes one initial commit on main, and stages the
+    fixture into pipeline/provisional/.
+    """
+    pipeline_dir = work_root / "pipeline"
+    provisional_dir = pipeline_dir / "provisional"
+    verified_dir = pipeline_dir / "verified"
+    state_dir = work_root / "state"
+    pipeline_dir.mkdir(parents=True)
+    provisional_dir.mkdir()
+    verified_dir.mkdir()
+    state_dir.mkdir()
+    (provisional_dir / ".gitkeep").write_text("")
+    (verified_dir / ".gitkeep").write_text("")
+
+    # Copy the script under test and its parser dependency into the temp repo.
+    shutil.copy2(PROMOTE_SCRIPT_PATH, pipeline_dir / "Promote-ToVerified.ps1")
+    shutil.copy2(PARSE_IDENTITY_PATH, pipeline_dir / "parse_identity.py")
+
+    # git init + initial commit on main.
+    subprocess.run(
+        ["git", "init", "-q"], cwd=work_root, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "promote-local@harness.local"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "promote-local-harness"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "main"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."], cwd=work_root, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "init"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+
+    # Stage the fixture LAST so it does not enter git history.
+    staged = provisional_dir / fixture_path.name
+    shutil.copy2(fixture_path, staged)
+
+    return {
+        "pipeline_dir": pipeline_dir,
+        "provisional_dir": provisional_dir,
+        "verified_dir": verified_dir,
+        "state_dir": state_dir,
+        "staged_article": staged,
+        "promote_script": pipeline_dir / "Promote-ToVerified.ps1",
+    }
+
+
+def _run_promote(pwsh_path, repo, work_root, dry_run):
+    """Invoke Promote-ToVerified.ps1 in the temp repo with mocked Gitea.
+
+    Returns dict with returncode, stdout, stderr, audit_files (list of
+    (path, parsed_json or None)), jsonl_events (list of dicts).
+    """
+    env = os.environ.copy()
+    env["LLM_WIKI_GITEA_MOCK_MODE"] = "local_only"
+    env["GITEA_URL"] = "https://mock.local"
+    env["GITEA_TOKEN"] = "mock-token"
+    env["GITEA_REPO_OWNER"] = "mock-owner"
+    env["GITEA_REPO_NAME"] = "mock-repo"
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    cmd = [
+        pwsh_path,
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        str(repo["promote_script"]),
+        "-ArticlePath", str(repo["staged_article"]),
+        "-RepoRoot", str(work_root),
+        "-StateRoot", str(repo["state_dir"]),
+        "-ProvisionalRoot", str(repo["provisional_dir"]),
+        "-VerifiedRoot", str(repo["verified_dir"]),
+        "-ContextDigest", "ctx-promote-local-mock",
+    ]
+    if dry_run:
+        cmd.append("-DryRun")
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=PROMOTE_TIMEOUT_SECONDS,
+        env=env,
+    )
+
+    audit_dir = repo["state_dir"] / "audit"
+    audit_files = []
+    if audit_dir.exists():
+        for f in sorted(audit_dir.iterdir()):
+            if f.is_file() and f.suffix == ".json":
+                try:
+                    with open(f, encoding="utf-8") as fh:
+                        audit_files.append((f.name, json.load(fh)))
+                except (OSError, json.JSONDecodeError):
+                    audit_files.append((f.name, None))
+
+    jsonl_events = _parse_jsonl_log(repo["state_dir"] / "logs" / "pipeline.log")
+
+    return {
+        "returncode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "audit_files": audit_files,
+        "jsonl_events": jsonl_events,
+    }
+
+
+def _cleanup_promote_local_worktrees(work_root):
+    """Best-effort: remove any worktrees the test created and the temp dir.
+
+    The promote-local test creates a worktree under %TEMP%\\llm-wiki-promote-*
+    that is intentionally left in place by the script.  This helper cleans
+    those orphans up after the test runs so they don't accumulate.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(work_root), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # Each block: "worktree <path>\nHEAD ...\nbranch ..."
+        # Only target worktrees the script created (basename
+        # starts with 'llm-wiki-promote-' but is NOT the test's
+        # outer work_root, which uses 'llm-wiki-promote-local-').
+        for line in (result.stdout or "").splitlines():
+            if not line.startswith("worktree "):
+                continue
+            wt_path = line[len("worktree "):].strip()
+            base = Path(wt_path).name
+            if base.startswith("llm-wiki-promote-") and "-local-" not in base:
+                subprocess.run(
+                    ["git", "-C", str(work_root),
+                     "worktree", "remove", "--force", wt_path],
+                    capture_output=True, timeout=10,
+                )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _assert_dry_run(label, run_data):
+    """Assertions for the -DryRun invocation."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-local", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc == 0, f"dry-run exit code is 0 (got {rc})", 0, rc)
+
+    audit_files = run_data["audit_files"]
+    add(
+        len(audit_files) == 1,
+        f"dry-run produced exactly one audit file ({len(audit_files)} found)",
+        1, len(audit_files),
+    )
+    if audit_files:
+        name, content = audit_files[0]
+        add(
+            _AUDIT_NAME_PATTERN.match(name) is not None,
+            f"audit filename matches promotion-preview-<docHash12>.json (got {name})",
+            "promotion-preview-<docHash12>.json", name,
+        )
+        add(content is not None, "audit file parses as JSON",
+            "valid JSON", "parse error" if content is None else "ok")
+        if content is not None:
+            for field in _REQUIRED_AUDIT_FIELDS:
+                val = content.get(field)
+                add(
+                    not _is_empty_value(val),
+                    f"audit field '{field}' present and non-empty",
+                    "non-empty value", repr(val)[:60],
+                )
+            # New fields from TD-002 part 1: present in dry-run with null values.
+            add(
+                "local_commit_sha" in content,
+                "audit has 'local_commit_sha' key (dry-run)",
+                "key present", list(content.keys())[:8],
+            )
+            add(
+                content.get("local_commit_sha") is None,
+                "dry-run audit local_commit_sha is null",
+                None, content.get("local_commit_sha"),
+            )
+            add(
+                "worktree_path" in content,
+                "audit has 'worktree_path' key (dry-run)",
+                "key present", list(content.keys())[:8],
+            )
+            add(
+                content.get("worktree_path") is None,
+                "dry-run audit worktree_path is null",
+                None, content.get("worktree_path"),
+            )
+
+    # No JSONL faults should fire in dry-run.
+    faults = [e for e in run_data["jsonl_events"]
+              if e.get("event_type") == "operational_fault"]
+    add(
+        len(faults) == 0,
+        f"dry-run emits no operational_fault events ({len(faults)} found)",
+        0, len(faults),
+    )
+
+    return results
+
+
+def _assert_live_run(label, run_data):
+    """Assertions for the live (non-DryRun) invocation."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-local", passed, message, expected, actual))
+
+    # Promote always throws until 03b is wired, so non-zero exit is expected.
+    rc = run_data["returncode"]
+    add(rc != 0, f"live-run exit code is non-zero (got {rc})",
+        "non-zero", rc)
+
+    stderr = run_data.get("stderr") or ""
+    stdout = run_data.get("stdout") or ""
+    combined = stderr + "\n" + stdout
+    add(
+        "promotion_gated_pending_remote_wiring" in combined,
+        "live-run output contains 'promotion_gated_pending_remote_wiring'",
+        "substring present",
+        "missing" if "promotion_gated_pending_remote_wiring" not in combined else "ok",
+    )
+    add(
+        "TD-002 part 2" in combined,
+        "live-run output references 'TD-002 part 2'",
+        "substring present",
+        "missing" if "TD-002 part 2" not in combined else "ok",
+    )
+
+    audit_files = run_data["audit_files"]
+    add(
+        len(audit_files) == 1,
+        f"live-run produced exactly one audit file ({len(audit_files)} found)",
+        1, len(audit_files),
+    )
+
+    commit_sha = None
+    worktree_path = None
+    branch_alias = None
+    if audit_files:
+        _, content = audit_files[0]
+        add(content is not None, "audit file parses as JSON",
+            "valid JSON", "parse error" if content is None else "ok")
+        if content is not None:
+            commit_sha = content.get("local_commit_sha")
+            worktree_path = content.get("worktree_path")
+            branch_alias = content.get("branch_alias")
+            add(
+                isinstance(commit_sha, str) and bool(_COMMIT_SHA_PATTERN.match(commit_sha)),
+                f"audit local_commit_sha is a 40-char hex (got {commit_sha!r})",
+                "40-char hex sha", commit_sha,
+            )
+            add(
+                isinstance(worktree_path, str) and "llm-wiki-promote-" in worktree_path,
+                f"audit worktree_path looks like a temp worktree (got {worktree_path!r})",
+                "contains 'llm-wiki-promote-'", worktree_path,
+            )
+            add(
+                isinstance(branch_alias, str) and bool(_BRANCH_ALIAS_PATTERN.match(branch_alias)),
+                f"audit branch_alias matches auto/<source>/<8-hex> (got {branch_alias!r})",
+                "auto/<source>/<8-hex>", branch_alias,
+            )
+
+    # Worktree on disk: should exist and contain the article copy.
+    if worktree_path:
+        wt = Path(worktree_path)
+        add(wt.is_dir(), f"worktree path exists on disk ({worktree_path})",
+            "directory exists", "missing" if not wt.is_dir() else "ok")
+        verified_in_wt = wt / "pipeline" / "verified" / "A-001-clean-article.md"
+        add(
+            verified_in_wt.is_file(),
+            "verified article was copied into the worktree",
+            "file present",
+            "missing" if not verified_in_wt.is_file() else "ok",
+        )
+    else:
+        add(False, "worktree path missing - downstream checks skipped",
+            "non-null path", None)
+        add(False, "verified-article check skipped (no worktree path)",
+            "file present", "skipped")
+
+    # Commit on the new branch: SHA should match what the audit reported.
+    if commit_sha and worktree_path and Path(worktree_path).is_dir():
+        head_proc = subprocess.run(
+            ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        head_sha = (head_proc.stdout or "").strip()
+        add(
+            head_sha == commit_sha,
+            f"worktree HEAD == audit local_commit_sha",
+            commit_sha, head_sha,
+        )
+
+        msg_proc = subprocess.run(
+            ["git", "-C", worktree_path, "log", "-1", "--pretty=%s"],
+            capture_output=True, text=True, timeout=10,
+        )
+        commit_msg = (msg_proc.stdout or "").strip()
+        add(
+            commit_msg.startswith("auto-promote: ") and " (" in commit_msg and commit_msg.endswith(")"),
+            f"commit message follows 'auto-promote: <source> (<8-hex>)' (got {commit_msg!r})",
+            "auto-promote: <source> (<8-hex>)", commit_msg,
+        )
+    else:
+        add(False, "commit-SHA check skipped (no commit_sha or worktree)",
+            "match", "skipped")
+        add(False, "commit-message check skipped (no commit_sha or worktree)",
+            "auto-promote: <source> (<8-hex>)", "skipped")
+
+    # No PROMOTION_LOCAL_GIT_FAILED faults on the happy path.
+    local_git_faults = [
+        e for e in run_data["jsonl_events"]
+        if e.get("fault_category") == "PROMOTION_LOCAL_GIT_FAILED"
+    ]
+    add(
+        len(local_git_faults) == 0,
+        f"happy path emits no PROMOTION_LOCAL_GIT_FAILED faults ({len(local_git_faults)} found)",
+        0, len(local_git_faults),
+    )
+
+    return results
+
+
+def _assert_failure_path(label, run_data):
+    """Assertions for the failure path (branch already exists)."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-local", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc != 0, f"failure-path exit code is non-zero (got {rc})",
+        "non-zero", rc)
+
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    add(
+        "already exists" in combined,
+        "failure-path output references 'already exists'",
+        "substring present",
+        "missing" if "already exists" not in combined else "ok",
+    )
+
+    # Promote should NOT have created a second worktree.
+    add(
+        "Local git promotion failed" in combined,
+        "failure-path raises 'Local git promotion failed'",
+        "substring present",
+        "missing" if "Local git promotion failed" not in combined else "ok",
+    )
+
+    # JSONL fault should be emitted with the canonical category and step.
+    faults = [
+        e for e in run_data["jsonl_events"]
+        if e.get("fault_category") == "PROMOTION_LOCAL_GIT_FAILED"
+    ]
+    add(
+        len(faults) >= 1,
+        f"failure path emits >=1 PROMOTION_LOCAL_GIT_FAILED fault ({len(faults)} found)",
+        ">=1", len(faults),
+    )
+    if faults:
+        latest = faults[-1]
+        add(
+            latest.get("fmea_ref") == "F7",
+            "fault fmea_ref == 'F7'",
+            "F7", latest.get("fmea_ref"),
+        )
+        add(
+            latest.get("step") == "branch_already_exists",
+            "fault step == 'branch_already_exists'",
+            "branch_already_exists", latest.get("step"),
+        )
+
+    return results
+
+
+def run_promote_local_tests():
+    """Run the promote-local stage assertions.
+
+    Exercises Promote-ToVerified.ps1 directly (not via Run-Validator):
+      1. -DryRun: audit preview produced with new local_commit_sha/worktree_path keys (null in dry-run)
+      2. Live run with mocked Gitea: worktree created, article copied, commit on new branch, post-local-git throw fires
+      3. Second live run with same article: branch-already-exists fail-loudly path
+
+    Returns (results, skipped_reason_or_None).
+    """
+    pwsh_path = _check_pwsh_available()
+    if pwsh_path is None:
+        return [], (
+            "pwsh (PowerShell 7+) not found on PATH. The promote-local stage "
+            "requires pwsh; powershell.exe is intentionally not used."
+        )
+
+    if not PROMOTE_SCRIPT_PATH.exists():
+        return [TestResult(
+            "promote-local", "promote-local", False,
+            f"Promote-ToVerified.ps1 not found: {PROMOTE_SCRIPT_PATH}",
+            "script exists", "missing",
+        )], None
+
+    fixture_path = CORPUS_DIR / PROMOTE_LOCAL_FIXTURE_REL
+    if not fixture_path.exists():
+        return [TestResult(
+            "promote-local", "promote-local", False,
+            f"Fixture not found: {fixture_path}",
+            "file exists", "missing",
+        )], None
+
+    all_results = []
+    work_root = Path(tempfile.mkdtemp(prefix="llm-wiki-promote-local-"))
+    try:
+        repo = _setup_promote_local_repo(work_root, fixture_path)
+
+        try:
+            dry = _run_promote(pwsh_path, repo, work_root, dry_run=True)
+        except subprocess.TimeoutExpired:
+            all_results.append(TestResult(
+                "promote-local:dry-run", "promote-local", False,
+                f"dry-run hung (timeout after {PROMOTE_TIMEOUT_SECONDS}s)",
+                "completes within timeout", "subprocess hung",
+            ))
+        else:
+            all_results.extend(_assert_dry_run("promote-local:dry-run", dry))
+
+        try:
+            live = _run_promote(pwsh_path, repo, work_root, dry_run=False)
+        except subprocess.TimeoutExpired:
+            all_results.append(TestResult(
+                "promote-local:live", "promote-local", False,
+                f"live-run hung (timeout after {PROMOTE_TIMEOUT_SECONDS}s)",
+                "completes within timeout", "subprocess hung",
+            ))
+        else:
+            all_results.extend(_assert_live_run("promote-local:live", live))
+
+        # Second live run: branch already exists from the first run, so
+        # Promote should fail loudly without creating a second worktree.
+        try:
+            second = _run_promote(pwsh_path, repo, work_root, dry_run=False)
+        except subprocess.TimeoutExpired:
+            all_results.append(TestResult(
+                "promote-local:rerun", "promote-local", False,
+                f"second live-run hung (timeout after {PROMOTE_TIMEOUT_SECONDS}s)",
+                "completes within timeout", "subprocess hung",
+            ))
+        else:
+            all_results.extend(_assert_failure_path("promote-local:rerun", second))
+    finally:
+        _cleanup_promote_local_worktrees(work_root)
+        try:
+            shutil.rmtree(work_root, ignore_errors=False)
+        except OSError as exc:
+            print(f"WARNING: cleanup of {work_root} failed: {exc}",
+                  file=sys.stderr)
+
+    return all_results, None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Golden corpus test harness for LLM-Wiki pipeline"
     )
     parser.add_argument(
-        "--stage", choices=["parser", "validator", "all"], default="all",
+        "--stage",
+        choices=["parser", "validator", "promote-local", "all"],
+        default="all",
         help="Which stage to test (default: all)"
     )
     parser.add_argument(
@@ -1424,6 +1923,22 @@ def main():
             print(f"  decisions exercised: approve, reject, escalate "
                   f"(+ approve repeat for determinism)")
             all_results.extend(integration_results)
+
+    # --- Promote-local assertions (TD-002 part 1) ---
+    if args.stage in ("promote-local", "all"):
+        print(f"\n--- Promote-local Assertions "
+              f"(Promote-ToVerified.ps1 in isolation) ---")
+        promote_results, skipped_reason = run_promote_local_tests()
+        if skipped_reason is not None:
+            print(f"  SKIPPED: {skipped_reason}")
+            unimplemented_stages.append(
+                "promote-local (skipped: pwsh unavailable)"
+            )
+        else:
+            print(f"  Gitea: mocked via LLM_WIKI_GITEA_MOCK_MODE=local_only")
+            print(f"  paths exercised: dry-run, live (post-local-git throw), "
+                  f"rerun (branch-exists fail-loudly)")
+            all_results.extend(promote_results)
 
     # --- Determine exit code ---
     if not all_results:
