@@ -1,0 +1,21 @@
+{
+  "decision": "reject",
+  "confidence": 0.97,
+  "reasoning": "The article contains multiple TODO placeholders and stub sections. Three sections are incomplete: Build has an explicit TODO, Test contains placeholder prose ('will be filled in later'), and Deploy has an explicit TODO. The Rollback section is also deferred. The article is not ready for promotion in its current state.",
+  "policy_violations": [
+    {
+      "rule_id": "COMPLETENESS-001",
+      "description": "Three explicit TODO placeholders are present: Build configuration examples, deployment target documentation, and environment variable management guidance.",
+      "severity": "major"
+    },
+    {
+      "rule_id": "COMPLETENESS-003",
+      "description": "Two sections contain stub prose indicating incomplete drafting: the Test section ('will be filled in later') and the Rollback section ('will be completed after the deployment stage documentation is finalized').",
+      "severity": "major"
+    }
+  ],
+  "recommendations": [
+    "Complete the Build, Test, Deploy, and Rollback sections before resubmitting.",
+    "Remove all TODO markers and placeholder prose."
+  ]
+}

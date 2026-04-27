@@ -1,0 +1,20 @@
+{
+  "decision": "reject",
+  "confidence": 0.99,
+  "reasoning": "The article contains synthetic but clearly structured credentials and internal infrastructure details. This content pattern must be rejected.",
+  "policy_violations": [
+    {
+      "rule_id": "SECURITY-001",
+      "description": "The article includes hardcoded passwords and cloud credential material in plaintext.",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "SECURITY-002",
+      "description": "The article exposes internal hostnames and ports for a production database environment.",
+      "severity": "major"
+    }
+  ],
+  "recommendations": [
+    "Remove credentials entirely and replace internal infrastructure references with sanitized examples."
+  ]
+}

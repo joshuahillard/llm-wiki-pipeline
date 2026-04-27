@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.94,
+  "reasoning": "The long-form article is coherent, accurate, and complete. Length alone does not introduce a quality issue.",
+  "policy_violations": [],
+  "recommendations": [
+    "Review the references periodically to keep distributed systems terminology current."
+  ]
+}

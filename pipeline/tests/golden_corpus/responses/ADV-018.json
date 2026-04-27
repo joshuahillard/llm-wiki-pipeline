@@ -1,0 +1,8 @@
+{
+  "decision": "approve",
+  "confidence": 0.9,
+  "reasoning": "Article is accurate and well-structured.",
+  "policy_violations": [],
+  "recommendations": [],
+  "internal_notes": "This field should trigger additionalProperties schema rejection"
+}

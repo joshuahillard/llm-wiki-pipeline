@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.88,
+  "reasoning": "The non-identity frontmatter value is truncated safely during parsing and the article body remains valid.",
+  "policy_violations": [],
+  "recommendations": [
+    "Shorten the oversized title field to avoid silent truncation in future edits."
+  ]
+}

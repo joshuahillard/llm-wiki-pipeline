@@ -1,0 +1,15 @@
+{
+  "decision": "approve",
+  "confidence": 0.81,
+  "reasoning": "The API reference is accurate and useful, but it omits the examples section that readers would reasonably expect for this article type.",
+  "policy_violations": [
+    {
+      "rule_id": "COMPLETENESS-004",
+      "description": "The API reference explains authentication and endpoints but provides no worked example or sample request/response.",
+      "severity": "minor"
+    }
+  ],
+  "recommendations": [
+    "Add at least one concrete example request and response so the reference is easier to apply."
+  ]
+}

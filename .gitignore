@@ -1,0 +1,176 @@
+# =============================================================================
+# LLM-Wiki Content Pipeline — root .gitignore
+# =============================================================================
+# Public repo. Anything in this file MUST stay out of git permanently.
+# Add new patterns here, not in subfolder .gitignore files.
+
+# -----------------------------------------------------------------------------
+# Obsidian vault data — PRIVATE (contains workspace history, plugin state,
+# graph data, and an unintentional mirror of the workspace tree)
+# -----------------------------------------------------------------------------
+**/.obsidian/
+*.obsidian-workspace
+
+# -----------------------------------------------------------------------------
+# Secrets, credentials, API keys
+# -----------------------------------------------------------------------------
+.env
+.env.*
+*.env
+.envrc
+**/secrets/
+**/credentials/
+*.key
+*.pem
+*.token
+*.crt
+*.p12
+*.pfx
+secrets.json
+credentials.json
+service-account*.json
+
+# Anthropic / cloud provider local config that some SDKs cache
+.anthropic/
+.aws/
+.gcloud/
+.azure/
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / lint caches
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# -----------------------------------------------------------------------------
+# Runtime pipeline state
+# -----------------------------------------------------------------------------
+# Production runtime state lives at C:\llm-wiki-state\ (out-of-tree).
+# The in-tree llm-wiki-state/ is a dev mirror — keep the directory structure
+# (.gitkeep) but never commit actual log/ledger/audit contents.
+llm-wiki-state/logs/*
+!llm-wiki-state/logs/.gitkeep
+llm-wiki-state/ledger/*
+!llm-wiki-state/ledger/.gitkeep
+llm-wiki-state/audit/*
+!llm-wiki-state/audit/.gitkeep
+llm-wiki-state/pending_pr/
+
+# Pipeline working dirs (verified articles — empty for now, but content
+# committed here would be PR-gated; keep dir structure only)
+# NOTE: provisional/ and verified/ ARE tracked at directory level via .gitkeep
+# Article content placed there should go through normal PR review.
+
+# Bootstrap temp config files emitted by Run-Validator.ps1
+llm-wiki-bootstrap-*.json
+
+# Validator feedback sidecars (generated next to articles on reject/escalate)
+*.feedback.md
+
+# -----------------------------------------------------------------------------
+# IDE / editor state
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# -----------------------------------------------------------------------------
+# OS junk
+# -----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+
+# -----------------------------------------------------------------------------
+# Temporary / backup files
+# -----------------------------------------------------------------------------
+*.tmp
+*.bak
+*.swp
+*.orig
+*.rej
+*~
+
+# -----------------------------------------------------------------------------
+# Logs (anywhere)
+# -----------------------------------------------------------------------------
+*.log
+!CHANGELOG*
+
+# -----------------------------------------------------------------------------
+# Jupyter
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# -----------------------------------------------------------------------------
+# Claude Code / agent harness local state (if any leaks into repo)
+# -----------------------------------------------------------------------------
+.claude/
+.claude-cache/
+
+# -----------------------------------------------------------------------------
+# Local-only operational / approval / audit docs
+# These live on disk for the project owner but are never committed.
+# -----------------------------------------------------------------------------
+PRE_PUSH_APPROVAL.md
+TECH_DEBT_AUDIT.md
+
+# -----------------------------------------------------------------------------
+# Stale point-in-time snapshot superseded by canonical files at root.
+# Removed from public commit per audit recommendation; remains on disk
+# for local reference.
+# -----------------------------------------------------------------------------
+handoff/
+handoff.skill
+
+# -----------------------------------------------------------------------------
+# Degraded binary duplicates of canonical Markdown
+# -----------------------------------------------------------------------------
+strategy/LLM-Wiki_Strategy_Kit.docx

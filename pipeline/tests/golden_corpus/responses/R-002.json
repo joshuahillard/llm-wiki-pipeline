@@ -1,0 +1,25 @@
+{
+  "decision": "reject",
+  "confidence": 0.97,
+  "reasoning": "The article is materially incomplete. It contains placeholder text, stub prose, and empty sections that prevent it from serving readers reliably.",
+  "policy_violations": [
+    {
+      "rule_id": "COMPLETENESS-001",
+      "description": "The article includes explicit TODO text in the installation section.",
+      "severity": "major"
+    },
+    {
+      "rule_id": "COMPLETENESS-002",
+      "description": "Multiple section headings are present with no content beneath them.",
+      "severity": "major"
+    },
+    {
+      "rule_id": "COMPLETENESS-003",
+      "description": "The article contains placeholder prose indicating unfinished drafting.",
+      "severity": "major"
+    }
+  ],
+  "recommendations": [
+    "Replace TODOs and placeholder text with complete instructions and either fill or remove empty sections."
+  ]
+}

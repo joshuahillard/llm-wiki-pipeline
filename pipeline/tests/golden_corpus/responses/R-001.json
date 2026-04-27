@@ -1,0 +1,20 @@
+{
+  "decision": "reject",
+  "confidence": 0.99,
+  "reasoning": "The article contains clear factual inversions and internal contradictions about TCP and UDP. It is not safe to promote.",
+  "policy_violations": [
+    {
+      "rule_id": "ACCURACY-001",
+      "description": "Core protocol properties are inverted, such as describing TCP as connectionless and UDP as connection-oriented.",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "ACCURACY-005",
+      "description": "The article contains internally contradictory claims about the same networking concepts.",
+      "severity": "critical"
+    }
+  ],
+  "recommendations": [
+    "Correct the protocol descriptions using authoritative networking references before resubmitting."
+  ]
+}

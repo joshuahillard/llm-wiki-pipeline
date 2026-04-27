@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.89,
+  "reasoning": "The numeric source_id is safely coerced to a string and the article content itself is valid.",
+  "policy_violations": [],
+  "recommendations": [
+    "No action required."
+  ]
+}

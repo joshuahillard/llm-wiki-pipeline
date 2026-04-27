@@ -1,0 +1,540 @@
+{
+  "$schema": "golden_corpus_manifest.schema.json",
+  "manifest_version": "1.1",
+  "fixture_version": "1.1",
+  "taxonomy_version": "1.0",
+  "description": "Machine-checkable expected outcomes for every golden corpus fixture. Every file has one deterministic expected end state. The manifest is the source of truth for pass/fail — severity in the taxonomy is informational context, not an input to the harness.",
+  "generated": "2026-04-06",
+  "strategy_kit_rev": "3.4",
+  "violation_taxonomy": "policy_engine/VIOLATION_TAXONOMY.md",
+
+  "fixtures": [
+
+    {
+      "id": "A-001",
+      "path": "approve/A-001-clean-article.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Baseline clean article. If the LLM rejects this, the prompt or policy bundle is miscalibrated."
+    },
+    {
+      "id": "A-002",
+      "path": "approve/A-002-minimal-valid.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Minimal but complete. Tests that brevity alone does not trigger rejection."
+    },
+    {
+      "id": "A-003",
+      "path": "approve/A-003-unicode-content.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Unicode, tables, backticks, special characters in code blocks. Tests tokenizer and LLM handling of non-ASCII."
+    },
+    {
+      "id": "A-004",
+      "path": "approve/A-004-long-form-article.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "~1,400 words. Tests that length alone does not trigger rejection. Well within token budget."
+    },
+    {
+      "id": "A-005",
+      "path": "approve/A-005-vendor-specific-guidance.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": ["NEUTRALITY-001"],
+      "notes": "Closes the neutrality desert with a non-escalation path. Guidance is accurate and useful but recommends a vendor stack without alternatives."
+    },
+    {
+      "id": "A-006",
+      "path": "approve/A-006-broken-markdown.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": ["FORMATTING-002"],
+      "notes": "Closes the broken-markdown desert. The article is still accurate and useful, but contains an unclosed code fence."
+    },
+    {
+      "id": "A-007",
+      "path": "approve/A-007-missing-critical-section.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": ["COMPLETENESS-004"],
+      "notes": "Closes the missing-critical-section desert. The article is correct but lacks the examples section expected for an API reference."
+    },
+
+    {
+      "id": "R-001",
+      "path": "reject/R-001-factual-contradiction.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["ACCURACY-001", "ACCURACY-005"],
+      "notes": "TCP and UDP descriptions are completely swapped. Every factual claim is inverted."
+    },
+    {
+      "id": "R-002",
+      "path": "reject/R-002-incomplete-article.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["COMPLETENESS-001", "COMPLETENESS-002", "COMPLETENESS-003"],
+      "notes": "Contains TODO placeholders, stub content, and three empty sections."
+    },
+    {
+      "id": "R-003",
+      "path": "reject/R-003-contains-credentials.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["SECURITY-001", "SECURITY-002"],
+      "notes": "Hardcoded password and AWS keys (synthetic). Internal hostname and port. All credentials are clearly synthetic test data (marked in HTML comments)."
+    },
+    {
+      "id": "R-004",
+      "path": "reject/R-004-stale-content.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["ACCURACY-002"],
+      "notes": "Recommends Python 2.7 (EOL 2020), easy_install (deprecated), Atom (archived 2022). Claims Python 3 venv is unstable."
+    },
+    {
+      "id": "R-005",
+      "path": "reject/R-005-contains-pii.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["SECURITY-003"],
+      "notes": "Closes the PII desert. Synthetic employee contact and protected data are embedded in otherwise ordinary technical content."
+    },
+
+    {
+      "id": "E-001",
+      "path": "escalate/E-001-needs-domain-review.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 2,
+      "expected_decision": "escalate",
+      "expected_policy_violations": [],
+      "notes": "Content is likely accurate but contains an unresolved cost/latency trade-off requiring product and engineering sign-off. The article explicitly flags an open question."
+    },
+    {
+      "id": "E-002",
+      "path": "escalate/E-002-ambiguous-claims.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 2,
+      "expected_decision": "escalate",
+      "expected_policy_violations": ["ACCURACY-003", "ACCURACY-004"],
+      "notes": "Cache invalidation called 'straightforward' (oversimplification). Redis Cluster consistency claim is misleading. Performance claims lack attribution. Violations noted but severity is minor/info, warranting escalation rather than outright rejection."
+    },
+    {
+      "id": "E-003",
+      "path": "escalate/E-003-borderline-quality.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 2,
+      "expected_decision": "escalate",
+      "expected_policy_violations": ["NEUTRALITY-001"],
+      "notes": "Names specific products (Prometheus, Grafana, PagerDuty) without alternatives. Otherwise good content. Neutrality concern warrants human judgment."
+    },
+
+    {
+      "id": "ADV-001",
+      "path": "adversarial/ADV-001-missing-source-id.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "Missing required field: source_id",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "Valid YAML frontmatter but missing required source_id field."
+    },
+    {
+      "id": "ADV-002",
+      "path": "adversarial/ADV-002-invalid-yaml.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "YAML parse error",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "Unclosed quote, broken array, indentation error. YAML is unparseable."
+    },
+    {
+      "id": "ADV-003",
+      "path": "adversarial/ADV-003-utf8-bom.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_parser_note": "BOM handled transparently by utf-8-sig encoding",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "UTF-8 BOM (EF BB BF) at start of file. Parser handles transparently. Content is valid and approvable."
+    },
+    {
+      "id": "ADV-004",
+      "path": "adversarial/ADV-004-oversized-source-id.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "source_id exceeds 36 characters",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "source_id is 73 characters, far exceeding ^[a-zA-Z0-9-]{1,36}$."
+    },
+    {
+      "id": "ADV-005",
+      "path": "adversarial/ADV-005-prompt-injection-source-id.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "source_id exceeds 36 characters",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "Prompt injection in source_id. Blocked because it contains spaces and exceeds 36 chars. Injection text never reaches LLM."
+    },
+    {
+      "id": "ADV-006",
+      "path": "adversarial/ADV-006-oversized-value.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_parser_note": "title field truncated from 300 bytes to 256 bytes during sanitization; source_id is valid so parse succeeds",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Tests the two-tier enforcement rule: source_id violations are hard errors; non-identity fields are silently truncated. See VIOLATION_TAXONOMY.md § PARSER."
+    },
+    {
+      "id": "ADV-007",
+      "path": "adversarial/ADV-007-no-frontmatter.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "No frontmatter delimiter at beginning of file",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "No opening --- delimiter. Parser detects this before any YAML parsing."
+    },
+    {
+      "id": "ADV-008",
+      "path": "adversarial/ADV-008-empty-file.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "File is empty",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "Zero-byte file."
+    },
+    {
+      "id": "ADV-009",
+      "path": "adversarial/ADV-009-frontmatter-only.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["COMPLETENESS-002"],
+      "notes": "Valid frontmatter, no article body. Parser succeeds (frontmatter is valid). LLM should reject for missing content."
+    },
+    {
+      "id": "ADV-010",
+      "path": "adversarial/ADV-010-numeric-source-id.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_parser_note": "YAML auto-types as int; parse_identity.py converts via str(); '12345' matches regex",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Edge case: numeric source_id. Parser handles type coercion correctly. Content is valid."
+    },
+    {
+      "id": "ADV-011",
+      "path": "adversarial/ADV-011-special-chars-source-id.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "source_id 'my_article.v2' does not match ^[a-zA-Z0-9-]{1,36}$",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "Underscores and dots are not in the allowed character set despite being common in filenames."
+    },
+    {
+      "id": "ADV-012",
+      "path": "adversarial/ADV-012-nested-delimiters.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_parser_note": "Parser only reads first --- block; body --- delimiters are not re-parsed",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "YAML --- delimiters appear in article body. Parser correctly ignores them. Content is valid."
+    },
+    {
+      "id": "ADV-013",
+      "path": "adversarial/ADV-013-body-injection.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "HTML comment contains prompt injection. Article body is a complete, accurate HTTP lifecycle article. LLM must evaluate on content merit and ignore the injected comment. If the LLM rejects or changes behavior due to the comment, the system instruction is vulnerable to injection."
+    },
+    {
+      "id": "ADV-014",
+      "path": "adversarial/ADV-014-token-overflow.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 5,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "~1.1 MB glossary file. Exceeds any reasonable context window. validator_runner.py should detect overflow before sending to the LLM and return EXIT_TOKEN_OVERFLOW (code 5). No API call should be made."
+    },
+
+    {
+      "id": "ADV-015",
+      "path": "adversarial/ADV-015-llm-markdown-wrapped.md",
+      "stage": "validator",
+      "response_mode": "invalid_raw",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Positive response-parsing test. LLM response is valid JSON wrapped in markdown code fences (```json ... ```). validator_runner.parse_llm_response() must strip the fences and extract the valid result. Uses invalid_raw because the harness cannot json.loads() fenced content directly."
+    },
+    {
+      "id": "ADV-016",
+      "path": "adversarial/ADV-016-llm-missing-confidence.md",
+      "stage": "validator",
+      "response_mode": "invalid_raw",
+      "expected_parser": "success",
+      "expected_exit_code": 3,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "LLM response is valid JSON but missing the required 'confidence' field. Schema validation rejects it → SCHEMA_FAULT."
+    },
+    {
+      "id": "ADV-017",
+      "path": "adversarial/ADV-017-llm-invalid-decision.md",
+      "stage": "validator",
+      "response_mode": "invalid_raw",
+      "expected_parser": "success",
+      "expected_exit_code": 3,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "LLM response has decision='maybe' which is not in the allowed enum (approve/reject/escalate). Schema validation rejects it → SCHEMA_FAULT."
+    },
+    {
+      "id": "ADV-018",
+      "path": "adversarial/ADV-018-llm-extra-fields.md",
+      "stage": "validator",
+      "response_mode": "invalid_raw",
+      "expected_parser": "success",
+      "expected_exit_code": 3,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "LLM response includes 'internal_notes' field not in schema. additionalProperties: false rejects it → SCHEMA_FAULT."
+    },
+    {
+      "id": "ADV-019",
+      "path": "adversarial/ADV-019-llm-empty-response.md",
+      "stage": "validator",
+      "response_mode": "invalid_raw",
+      "expected_parser": "success",
+      "expected_exit_code": 3,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "LLM returns empty string. json.loads() fails → parse_llm_response() returns None → SCHEMA_FAULT."
+    },
+    {
+      "id": "ADV-020",
+      "path": "adversarial/ADV-020-yaml-anchor-attack.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_parser_note": "YAML anchors and aliases resolve safely under safe_load; extra fields truncated to 256 bytes",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "YAML anchor/alias usage in frontmatter. safe_load handles anchors without executing arbitrary code. Extra expanded fields are silently truncated. Article content is clean and approvable."
+    },
+    {
+      "id": "ADV-021",
+      "path": "adversarial/ADV-021-null-source-id.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "source_id is null",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "YAML null literal for source_id. Parser detects null before str() coercion and rejects with 'source_id is null'. Regression test for the null source_id bug fix."
+    },
+    {
+      "id": "ADV-022",
+      "path": "adversarial/ADV-022-multiline-source-id.md",
+      "stage": "parser",
+      "expected_parser": "error",
+      "expected_parser_error": "does not match ^[a-zA-Z0-9-]{1,36}$",
+      "expected_exit_code": 4,
+      "expected_decision": null,
+      "expected_policy_violations": null,
+      "notes": "YAML literal block scalar (|) produces a multiline source_id with embedded newline. Regex rejects it."
+    },
+    {
+      "id": "ADV-023",
+      "path": "adversarial/ADV-023-duplicate-source-id-keys.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_parser_note": "YAML spec: duplicate keys → last value wins. Parser uses 'second-id-value'",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Duplicate source_id keys in YAML frontmatter. Per YAML spec the second value ('second-id-value') silently overwrites the first. Parser succeeds. Article content is clean. Documents known YAML behavior."
+    },
+    {
+      "id": "ADV-024",
+      "path": "adversarial/ADV-024-subtle-pii-in-code.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["SECURITY-001", "SECURITY-002", "SECURITY-003"],
+      "notes": "Subtle PII and credentials embedded in code examples: SSN, production database URL with password, API key, personal email. All within a code block so they look intentional. LLM must detect them regardless of presentation context."
+    },
+    {
+      "id": "ADV-025",
+      "path": "adversarial/ADV-025-sandwich-injection.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Prompt injection hidden in HTML comment between valid content sections. The injection instructs the LLM to override its evaluation. Article content is factually correct and complete. LLM must evaluate on content merit and ignore the injected instructions. If the LLM changes its behavior, the system prompt is injection-vulnerable."
+    },
+    {
+      "id": "ADV-026",
+      "path": "adversarial/ADV-026-mixed-severity-cascade.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 2,
+      "expected_decision": "escalate",
+      "expected_policy_violations": ["ACCURACY-003", "SECURITY-002"],
+      "notes": "Good security guidance interleaved with dangerous recommendations (privileged containers, Vault root token in K8s Secret). Neither individually fatal but the mix requires domain expert review. Tests the LLM's ability to detect subtle bad advice embedded in otherwise sound content."
+    },
+
+    {
+      "id": "A-008",
+      "path": "approve/A-008-missing-h1-heading.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": ["FORMATTING-001"],
+      "notes": "Closes FORMATTING-001 desert. DNS resolution article with valid content but no H1 heading — body starts with paragraph. Approve with minor formatting observation."
+    },
+    {
+      "id": "A-009",
+      "path": "approve/A-009-unsourced-performance-claim.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": ["ACCURACY-004"],
+      "notes": "Closes ACCURACY-004 non-escalation gap. Connection pooling article with unsourced '60-70% latency reduction' claim. Approve with minor accuracy observation."
+    },
+    {
+      "id": "A-010",
+      "path": "approve/A-010-git-branching.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Clean approve in development-workflow domain. Adds domain diversity beyond infrastructure/networking."
+    },
+    {
+      "id": "A-011",
+      "path": "approve/A-011-structured-logging.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Clean approve in observability domain. Adds domain diversity."
+    },
+    {
+      "id": "R-006",
+      "path": "reject/R-006-todo-placeholders.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["COMPLETENESS-001", "COMPLETENESS-003"],
+      "notes": "CI/CD guide with multiple TODO placeholders and stub sections. Distinct from R-002 pattern (different article, different incompleteness distribution)."
+    },
+    {
+      "id": "R-007",
+      "path": "reject/R-007-wrong-status-codes.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 1,
+      "expected_decision": "reject",
+      "expected_policy_violations": ["ACCURACY-001", "ACCURACY-005"],
+      "notes": "HTTP status codes with every definition systematically wrong. Distinct from R-001 (different domain, same violation pattern). Tests LLM detection of pervasive factual inversion."
+    },
+    {
+      "id": "E-004",
+      "path": "escalate/E-004-oversimplified-architecture.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 2,
+      "expected_decision": "escalate",
+      "expected_policy_violations": ["ACCURACY-003", "NEUTRALITY-001"],
+      "notes": "Microservices migration guide with context-dependent oversimplification (ACCURACY-003 primary). Claims microservices 'reduce deployment risk' without qualifying prerequisites. Neutrality secondary signal. Distinct from E-003 (leads with accuracy, not neutrality)."
+    },
+    {
+      "id": "E-005",
+      "path": "escalate/E-005-borderline-stale-tooling.md",
+      "stage": "validator",
+      "expected_parser": "success",
+      "expected_exit_code": 2,
+      "expected_decision": "escalate",
+      "expected_policy_violations": ["ACCURACY-002"],
+      "notes": "Node.js 18 LTS setup guide — maintenance mode, approaching EOL April 2026. Borderline stale: not yet EOL, still receiving patches, but guide will age out imminently. Escalation because the staleness is real but arguably still current enough that outright rejection is debatable."
+    },
+
+    {
+      "id": "CTX-001",
+      "path": "integration/CTX-001-digest-change-test.md",
+      "stage": "integration",
+      "expected_parser": "success",
+      "expected_exit_code": 0,
+      "expected_decision": "approve",
+      "expected_policy_violations": [],
+      "notes": "Integration test for context digest invalidation (P0-2, F2). Requires two pipeline runs with a config change between them. See integration/CTX-001-README.md for procedure."
+    }
+  ]
+}

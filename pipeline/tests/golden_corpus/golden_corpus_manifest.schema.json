@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "golden_corpus_manifest.schema.json",
+  "title": "Golden Corpus Manifest",
+  "description": "Schema for the machine-checkable expected outcomes of golden corpus fixtures.",
+  "type": "object",
+  "required": ["manifest_version", "fixture_version", "taxonomy_version", "fixtures"],
+  "properties": {
+    "manifest_version": { "type": "string", "description": "Schema/structure version of this manifest file." },
+    "fixture_version": { "type": "string", "description": "Version of the fixture files. Bump when fixture content changes." },
+    "taxonomy_version": { "type": "string", "description": "Version of VIOLATION_TAXONOMY.md. Bump when rule IDs are added/changed." },
+    "description": { "type": "string" },
+    "generated": { "type": "string", "format": "date" },
+    "strategy_kit_rev": { "type": "string" },
+    "violation_taxonomy": { "type": "string" },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "path", "stage", "expected_parser", "expected_exit_code", "expected_decision", "expected_policy_violations"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(A|R|E|ADV|CTX|TOK)-[0-9]{3}$",
+            "description": "Unique fixture ID. Prefix: A=approve, R=reject, E=escalate, ADV=adversarial, CTX=context, TOK=token."
+          },
+          "path": {
+            "type": "string",
+            "description": "Path relative to the golden_corpus directory."
+          },
+          "stage": {
+            "type": "string",
+            "enum": ["parser", "validator", "integration"],
+            "description": "Which pipeline stage this fixture primarily tests. 'parser' = parse_identity.py, 'validator' = validator_runner.py, 'integration' = multi-step pipeline test."
+          },
+          "expected_parser": {
+            "type": "string",
+            "enum": ["success", "error"],
+            "description": "Whether parse_identity.py should succeed or return an error."
+          },
+          "expected_parser_error": {
+            "type": ["string", "null"],
+            "description": "Expected error message substring from parse_identity.py. Only set when expected_parser is 'error'."
+          },
+          "expected_parser_note": {
+            "type": ["string", "null"],
+            "description": "Note about parser behavior when expected_parser is 'success' but the behavior is non-obvious."
+          },
+          "expected_exit_code": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "description": "Expected final exit code: 0=APPROVE, 1=REJECT, 2=ESCALATE, 3=SCHEMA_FAULT, 4=SYSTEM_FAULT, 5=TOKEN_OVERFLOW."
+          },
+          "expected_decision": {
+            "type": ["string", "null"],
+            "enum": ["approve", "reject", "escalate", null],
+            "description": "Expected LLM decision. null if the file never reaches the LLM (parser error or token overflow)."
+          },
+          "expected_policy_violations": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z]+-[0-9]{3}$"
+            },
+            "description": "Expected rule_id values in the policy_violations array. Empty array for clean approvals. null if the file never reaches the LLM."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Human-readable explanation of what this fixture tests and why the expected outcome is correct."
+          }
+        }
+      }
+    }
+  }
+}

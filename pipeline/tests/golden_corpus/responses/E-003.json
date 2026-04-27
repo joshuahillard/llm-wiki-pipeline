@@ -1,0 +1,15 @@
+{
+  "decision": "escalate",
+  "confidence": 0.63,
+  "reasoning": "The content is otherwise strong, but the vendor-specific recommendations without alternatives make the neutrality boundary ambiguous enough to warrant human review.",
+  "policy_violations": [
+    {
+      "rule_id": "NEUTRALITY-001",
+      "description": "The article names a specific monitoring stack without discussing alternatives or decision criteria.",
+      "severity": "info"
+    }
+  ],
+  "recommendations": [
+    "Either add alternatives and tradeoffs or let a maintainer decide whether the vendor specificity is appropriate."
+  ]
+}

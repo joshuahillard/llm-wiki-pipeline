@@ -1,0 +1,28 @@
+# Secrets and credentials — never commit these
+.env
+.env.*
+*.env
+.envrc
+
+# API keys and tokens
+**/secrets/
+**/credentials/
+*.key
+*.pem
+*.token
+
+# Temporary pipeline state (lives at C:\llm-wiki-state\, not in repo)
+*.tmp
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini

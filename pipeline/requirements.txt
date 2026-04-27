@@ -1,0 +1,13 @@
+# LLM-Wiki Content Pipeline — Python runtime + test dependencies
+#
+# Requires Python 3.10+ (Anthropic SDK and modern jsonschema rely on it).
+# Lower bounds are intentionally loose; tighten only if a regression is observed.
+
+# Anthropic Messages API (live LLM provider in pipeline/validator_runner.py)
+anthropic>=0.40
+
+# JSON Schema validation for validator output (pipeline/schema_helpers.py)
+jsonschema>=4.0
+
+# YAML frontmatter parsing for article identity (pipeline/parse_identity.py)
+pyyaml>=6.0

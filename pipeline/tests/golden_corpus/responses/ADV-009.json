@@ -1,0 +1,15 @@
+{
+  "decision": "reject",
+  "confidence": 0.95,
+  "reasoning": "The file has valid frontmatter but no usable article body, which makes it incomplete for readers.",
+  "policy_violations": [
+    {
+      "rule_id": "COMPLETENESS-002",
+      "description": "The document effectively contains no article content after the metadata block.",
+      "severity": "major"
+    }
+  ],
+  "recommendations": [
+    "Add article content below the frontmatter before resubmitting."
+  ]
+}

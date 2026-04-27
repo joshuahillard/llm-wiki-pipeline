@@ -1,0 +1,7 @@
+{
+  "decision": "approve",
+  "confidence": 0.93,
+  "reasoning": "The article provides a balanced, accurate overview of Git branching strategies. It covers feature branches, trunk-based development, and release branches with clear tradeoffs for each. No policy violations detected.",
+  "policy_violations": [],
+  "recommendations": []
+}

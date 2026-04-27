@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.95,
+  "reasoning": "The article remains structurally sound and technically accurate despite Unicode and special formatting characters.",
+  "policy_violations": [],
+  "recommendations": [
+    "Retain the current formatting because it demonstrates a useful edge case cleanly."
+  ]
+}

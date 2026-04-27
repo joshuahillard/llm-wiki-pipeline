@@ -1,0 +1,15 @@
+{
+  "decision": "reject",
+  "confidence": 0.96,
+  "reasoning": "The article recommends tools and practices that are outdated or deprecated, making it unsafe as current guidance.",
+  "policy_violations": [
+    {
+      "rule_id": "ACCURACY-002",
+      "description": "The article recommends Python 2.7, easy_install, and Atom as current guidance even though they are deprecated or end-of-life.",
+      "severity": "major"
+    }
+  ],
+  "recommendations": [
+    "Replace deprecated tooling with current equivalents and update the version guidance."
+  ]
+}

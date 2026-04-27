@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.87,
+  "reasoning": "The HTML comment contains prompt-injection text, but the article content remains complete and accurate. The content should be judged on merit, not on the injected comment.",
+  "policy_violations": [],
+  "recommendations": [
+    "Consider removing non-content comments from production articles even when they do not change the verdict."
+  ]
+}

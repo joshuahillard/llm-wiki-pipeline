@@ -1,0 +1,7 @@
+{
+  "decision": "approve",
+  "confidence": 0.88,
+  "reasoning": "Article body is accurate and well-structured. YAML anchor usage in frontmatter does not affect content quality.",
+  "policy_violations": [],
+  "recommendations": []
+}

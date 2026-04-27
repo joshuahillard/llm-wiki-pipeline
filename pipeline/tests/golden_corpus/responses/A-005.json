@@ -1,0 +1,15 @@
+{
+  "decision": "approve",
+  "confidence": 0.84,
+  "reasoning": "The guidance is technically useful and operationally sound, but it recommends a specific stack without discussing alternatives or tradeoffs.",
+  "policy_violations": [
+    {
+      "rule_id": "NEUTRALITY-001",
+      "description": "The article recommends Prometheus, Grafana, and Alertmanager without noting plausible alternatives or tradeoff boundaries.",
+      "severity": "info"
+    }
+  ],
+  "recommendations": [
+    "Add one sentence acknowledging alternative observability stacks or the context in which this stack is preferred."
+  ]
+}

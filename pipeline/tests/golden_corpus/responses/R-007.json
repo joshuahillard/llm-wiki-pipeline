@@ -1,0 +1,21 @@
+{
+  "decision": "reject",
+  "confidence": 0.99,
+  "reasoning": "The article systematically assigns incorrect meanings to HTTP status codes. Every entry in the 2xx, 3xx, 4xx, and 5xx tables has its description swapped or inverted. For example, 200 OK is described as 'the request failed,' 404 Not Found is described as 'an unexpected internal error,' and 503 Service Unavailable is described as 'operating normally.' These are not minor inaccuracies — every single definition contradicts the RFC specification.",
+  "policy_violations": [
+    {
+      "rule_id": "ACCURACY-001",
+      "description": "Every HTTP status code definition in the article is inverted or swapped. 200 is described as a failure, 404 as a server error, 500 as 'not found,' and 503 as 'operating normally.' This is systematically wrong.",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "ACCURACY-005",
+      "description": "The article's own Usage Guidelines section correctly states that status codes drive client behavior, while the tables above contradict the meaning of every code listed. The article is internally inconsistent.",
+      "severity": "critical"
+    }
+  ],
+  "recommendations": [
+    "Rewrite all status code tables using the definitions from RFC 9110.",
+    "Verify each entry against the referenced MDN documentation before resubmitting."
+  ]
+}

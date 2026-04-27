@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "validation_result.schema.json",
+  "title": "LLM Validation Result",
+  "description": "Schema for LLM content evaluation output. All LLM responses must validate against this schema before any downstream action. Schema-invalid output triggers SCHEMA_FAULT (exit code 3).",
+  "type": "object",
+  "required": ["decision", "confidence", "reasoning", "policy_violations", "recommendations"],
+  "additionalProperties": false,
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "reject", "escalate"],
+      "description": "The evaluation outcome."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Model confidence in the decision, 0.0 to 1.0."
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Free-text explanation of the decision. Required for all outcomes. Feeds future DPO training (ADR-003)."
+    },
+    "policy_violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "description", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[A-Z0-9-]+$",
+            "maxLength": 64,
+            "description": "Policy rule identifier (e.g., ACCURACY-001)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1024,
+            "description": "Human-readable description of the violation."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor", "info"],
+            "description": "Violation severity level."
+          }
+        }
+      },
+      "description": "List of policy violations found. Empty array for approve decisions."
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 512
+      },
+      "maxItems": 10,
+      "description": "Actionable recommendations for the content author."
+    }
+  }
+}

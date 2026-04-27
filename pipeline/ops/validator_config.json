@@ -1,0 +1,11 @@
+{
+  "provider": "anthropic",
+  "model_id": "claude-sonnet-4-6",
+  "quantization_level": null,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "max_context_tokens": 128000,
+  "system_instruction_hash": "9b4398a9b0980b94d7130ad9ad5c4c30ae84886d3be23be53c3ec7577598543d",
+  "lora_adapter_path": null,
+  "tokenizer_id": "claude-sonnet-4-6"
+}

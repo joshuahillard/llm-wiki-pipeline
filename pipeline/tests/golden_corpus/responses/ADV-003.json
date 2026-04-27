@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.9,
+  "reasoning": "The file contains a UTF-8 BOM, but the parser handles it correctly and the article content is valid.",
+  "policy_violations": [],
+  "recommendations": [
+    "No action required."
+  ]
+}

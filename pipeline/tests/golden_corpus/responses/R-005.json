@@ -1,0 +1,15 @@
+{
+  "decision": "reject",
+  "confidence": 0.99,
+  "reasoning": "The article contains employee contact information and protected identifiers. Even as synthetic test data, this content shape is a critical security violation.",
+  "policy_violations": [
+    {
+      "rule_id": "SECURITY-003",
+      "description": "The article includes personally identifiable information such as employee emails, phone numbers, and SSNs.",
+      "severity": "critical"
+    }
+  ],
+  "recommendations": [
+    "Remove all personal data and replace the table with role-based placeholders or synthetic non-identifying examples."
+  ]
+}

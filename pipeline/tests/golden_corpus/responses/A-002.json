@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.92,
+  "reasoning": "The article is brief but complete for its stated scope. It does not contain policy violations.",
+  "policy_violations": [],
+  "recommendations": [
+    "Consider adding links to the official Git documentation for deeper follow-up."
+  ]
+}

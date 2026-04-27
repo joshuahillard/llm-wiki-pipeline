@@ -1,0 +1,15 @@
+{
+  "decision": "approve",
+  "confidence": 0.82,
+  "reasoning": "The technical content is accurate and useful, but the markdown contains an unclosed code fence that can break rendering.",
+  "policy_violations": [
+    {
+      "rule_id": "FORMATTING-002",
+      "description": "The SQL example opens a fenced code block and never closes it, causing broken markdown structure.",
+      "severity": "minor"
+    }
+  ],
+  "recommendations": [
+    "Close the fenced SQL block so the rest of the article renders normally."
+  ]
+}

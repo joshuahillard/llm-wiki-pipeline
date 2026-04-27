@@ -1,0 +1,7 @@
+{
+  "decision": "approve",
+  "confidence": 0.92,
+  "reasoning": "Article accurately covers URI path, header, and query parameter API versioning strategies. Content is factually correct, well-structured, and free of policy violations. HTML comments in the source do not affect content quality.",
+  "policy_violations": [],
+  "recommendations": []
+}

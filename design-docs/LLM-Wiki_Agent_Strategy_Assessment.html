@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM-Wiki Agent Strategy Assessment</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232735;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent-dim: #4a6ad4;
+    --green: #4ade80;
+    --yellow: #facc15;
+    --red: #f87171;
+    --orange: #fb923c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.8rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--text-dim); margin-bottom: 2rem; font-size: 0.95rem; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 2.5rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+  }
+  h3 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
+  p, li { color: var(--text); font-size: 0.92rem; }
+  p { margin-bottom: 0.75rem; }
+  ul { padding-left: 1.25rem; margin-bottom: 1rem; }
+  li { margin-bottom: 0.35rem; }
+
+  .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+  }
+  .card h3 { margin-top: 0; color: var(--accent); font-size: 1rem; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--surface2); color: var(--accent); font-weight: 600; }
+  td { background: var(--surface); }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .tag-green { background: #16432a; color: var(--green); }
+  .tag-yellow { background: #433a16; color: var(--yellow); }
+  .tag-red { background: #431616; color: var(--red); }
+  .tag-orange { background: #43311a; color: var(--orange); }
+  .tag-blue { background: #1a2a43; color: var(--accent); }
+
+  .verdict {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .verdict strong { color: var(--accent); }
+
+  .component-map {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    white-space: pre;
+    line-height: 1.5;
+    overflow-x: auto;
+    color: var(--text-dim);
+  }
+  .component-map .highlight { color: var(--accent); font-weight: 600; }
+  .component-map .green { color: var(--green); }
+  .component-map .yellow { color: var(--yellow); }
+  .component-map .red { color: var(--red); }
+
+  .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<h1>LLM-Wiki &times; Claude Agents</h1>
+<p class="subtitle">Strategic assessment: Managed Agents vs. Agent SDK for the validation pipeline &mdash; April 8, 2026</p>
+
+<h2>1. What Just Shipped</h2>
+
+<p>Anthropic launched <strong>Claude Managed Agents</strong> (beta, <code>managed-agents-2026-04-01</code>) alongside the existing <strong>Claude Agent SDK</strong>. These are two distinct products for building autonomous agents on Claude.</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Managed Agents</h3>
+    <p>A hosted service. You define an agent (model + system prompt + tools) and an environment (cloud container with packages and networking). Anthropic runs it. Sessions persist through disconnections. You stream events via SSE.</p>
+    <p><strong>Pricing:</strong> Standard token cost + $0.08/session-hour active runtime + $10/1K web searches.</p>
+    <p><strong>Think of it as:</strong> "Claude Code as a cloud service you configure via API."</p>
+  </div>
+  <div class="card">
+    <h3>Agent SDK</h3>
+    <p>A library (Python / TypeScript) that gives you the same agent loop and tools as Claude Code, but running on <em>your</em> infrastructure. You control the process, the sandbox, the filesystem.</p>
+    <p><strong>Pricing:</strong> Standard API token cost only. You own the compute.</p>
+    <p><strong>Think of it as:</strong> "Claude Code as a Python import."</p>
+  </div>
+</div>
+
+<h2>2. LLM-Wiki Component Mapping</h2>
+
+<p>Here's how each pipeline component maps onto the two agent models.</p>
+
+<div class="component-map"><span class="highlight">Current LLM-Wiki Pipeline</span>
+┌─────────────────────────────────────────────────────────────┐
+│  <span class="green">Run-Validator.ps1</span>        &mdash; Orchestrator (PowerShell)         │
+│    ├── <span class="green">parse_identity.py</span>   &mdash; Article identity & metadata       │
+│    ├── <span class="green">validator_runner.py</span>  &mdash; LLM evaluation (stub provider)    │
+│    ├── policy_engine/        &mdash; Policy bundle & rules              │
+│    └── llm-wiki-state/       &mdash; Ledger, audit logs, external state │
+│                                                                 │
+│  <span class="yellow">Promote-ToVerified.ps1</span>   &mdash; Gitea PR creation (fail-closed)   │
+│  <span class="red">Live LLM Provider</span>        &mdash; TD-001: Not yet wired               │
+│  <span class="red">Gitea Integration</span>        &mdash; TD-002: PR creation not implemented  │
+└─────────────────────────────────────────────────────────────┘</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Component</th>
+      <th>Managed Agents</th>
+      <th>Agent SDK</th>
+      <th>Fit</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Run-Validator.ps1</strong><br>PowerShell orchestrator</td>
+      <td>Replace with agent system prompt + bash tool. The agent loop itself becomes the orchestrator. Container runs Python natively; PowerShell is available but less natural.</td>
+      <td>Wrap as a Python script that calls <code>query()</code>. Agent reads provisional/ articles, runs validation, writes results. You keep the local filesystem and state directory.</td>
+      <td><span class="tag tag-green">Both</span></td>
+    </tr>
+    <tr>
+      <td><strong>parse_identity.py</strong><br>Article identity extraction</td>
+      <td>Upload to container filesystem or install as a package. Agent calls it via bash tool.</td>
+      <td>Already Python &mdash; agent calls it directly via bash or as a library import within the agent's working directory.</td>
+      <td><span class="tag tag-green">Both</span></td>
+    </tr>
+    <tr>
+      <td><strong>validator_runner.py</strong><br>LLM evaluation engine</td>
+      <td>In Managed Agents, Claude <strong>is</strong> the evaluator &mdash; the system prompt becomes the policy-aware evaluation prompt. This collapses the validator + provider into one. <strong>Caution:</strong> Agent-loop evaluation changes the prompt stack, tool context, and execution semantics versus a direct Messages API call. Evaluation fidelity must be benchmarked against the golden corpus before treating this as equivalent to a clean provider integration.</td>
+      <td>Two paths: (1) Collapse &mdash; Claude evaluates within the agent loop (same fidelity concern applies). (2) Separation &mdash; agent orchestrates, but evaluation is a direct Messages API call via bash or custom tool, preserving the clean prompt boundary. Path 2 keeps TD-001's semantics intact.</td>
+      <td><span class="tag tag-yellow">Decision gate</span></td>
+    </tr>
+    <tr>
+      <td><strong>Policy engine / bundle</strong><br>Governance rules</td>
+      <td>Encode as system prompt instructions + files mounted in the container environment. Agent reads policy files at runtime.</td>
+      <td>Same &mdash; policy files live in the agent's working directory. CLAUDE.md or Skills can encode policy instructions.</td>
+      <td><span class="tag tag-green">Both</span></td>
+    </tr>
+    <tr>
+      <td><strong>llm-wiki-state/</strong><br>Ledger, audit, logs</td>
+      <td>Managed Agents documents "stateful sessions" with persistent filesystems across interactions within a session. <strong>Unresolved:</strong> Whether session-persistent storage satisfies append-only ledger guarantees <em>across session boundaries</em> (e.g., container recycling, session expiry, export semantics for external audit). This requires empirical validation before committing.</td>
+      <td>Runs on your machine &mdash; <code>C:\llm-wiki-state\</code> remains exactly as designed. No migration needed. Persistence model is fully understood and tested.</td>
+      <td><span class="tag tag-yellow">SDK simpler</span></td>
+    </tr>
+    <tr>
+      <td><strong>Promote-ToVerified.ps1</strong><br>Gitea PR creation</td>
+      <td>Custom tool definition that calls your Gitea API, or MCP server wrapping Gitea. Agent emits the tool call; your code creates the PR. Good boundary enforcement.</td>
+      <td>MCP server for Gitea, or direct API calls via bash. You keep the human-in-the-loop gate since you control the process.</td>
+      <td><span class="tag tag-green">Both</span></td>
+    </tr>
+    <tr>
+      <td><strong>Golden corpus / test suite</strong><br>196 assertions, 42 fixtures</td>
+      <td>Mount fixtures in the container. Agent can run <code>pytest</code> as a bash tool. But running the full test suite per session burns runtime hours at $0.08/hr.</td>
+      <td>Tests run locally with zero marginal cost. Existing pytest infrastructure unchanged.</td>
+      <td><span class="tag tag-orange">SDK wins</span></td>
+    </tr>
+    <tr>
+      <td><strong>Token budgeting</strong><br>P0 requirement, EXIT_TOKEN_OVERFLOW</td>
+      <td>Managed Agents handles prompt caching and compaction automatically. You lose fine-grained token control. No documented equivalent of EXIT_TOKEN_OVERFLOW (code 5).</td>
+      <td>SDK offers stronger spend/turn instrumentation: <code>max_budget_usd</code>, <code>max_turns</code>, per-step usage tracking, and hooks at tool boundaries. However, an exact pre-generation hook that reports future token totals before the model step is not documented. EXIT_TOKEN_OVERFLOW semantics would need an implementation layer on top of these primitives.</td>
+      <td><span class="tag tag-orange">SDK better</span></td>
+    </tr>
+    <tr>
+      <td><strong>Hybrid deployment</strong><br>Managed API + self-hosted fallback</td>
+      <td>Managed Agents is Claude-only by design. No path to self-hosted models as a secondary evaluator.</td>
+      <td>SDK officially supports Anthropic API, Bedrock, Vertex AI, and Azure AI Foundry. Self-hosted Llama/Mistral fallback is <em>not</em> SDK-native &mdash; it requires your own provider abstraction layer on top. The runtime parity harness is viable but depends on custom integration, not built-in SDK routing.</td>
+      <td><span class="tag tag-orange">SDK better</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3. Strategic Comparison</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Dimension</th>
+      <th>Managed Agents</th>
+      <th>Agent SDK</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Infrastructure burden</strong></td>
+      <td><span class="tag tag-green">Low</span> &mdash; Anthropic manages containers, sandboxing, persistence</td>
+      <td><span class="tag tag-yellow">Medium</span> &mdash; You manage the runtime (your Windows machine today)</td>
+    </tr>
+    <tr>
+      <td><strong>Architecture control</strong></td>
+      <td><span class="tag tag-yellow">Limited</span> &mdash; Opinionated agent loop; you configure, not code</td>
+      <td><span class="tag tag-green">Full</span> &mdash; Same tools, your orchestration logic</td>
+    </tr>
+    <tr>
+      <td><strong>State persistence</strong></td>
+      <td><span class="tag tag-yellow">Session-persistent</span> &mdash; Filesystems persist within sessions; cross-session durability and export semantics unverified for append-only ledger requirements</td>
+      <td><span class="tag tag-green">Native</span> &mdash; Local filesystem, your state directory, fully understood lifecycle</td>
+    </tr>
+    <tr>
+      <td><strong>Multi-provider support</strong></td>
+      <td><span class="tag tag-red">Claude only</span></td>
+      <td><span class="tag tag-green">Bedrock, Vertex, Azure</span> (official) &mdash; self-hosted models require custom provider abstraction</td>
+    </tr>
+    <tr>
+      <td><strong>Cost model</strong></td>
+      <td>Tokens + $0.08/session-hr + web search fees</td>
+      <td>Tokens only + your compute</td>
+    </tr>
+    <tr>
+      <td><strong>Governance/auditability</strong></td>
+      <td>Managed Agents provides scoped permissions, execution tracing, persisted event history (fetchable in full), and custom tools as control points. If your standard is "auditable control points with a transcript," this is substantive. If your standard is "we own the execution environment end-to-end," this is insufficient.</td>
+      <td>Full local control &mdash; hooks for audit logging, local ledger, trust-nothing posture intact. You own the runtime, the filesystem, and the execution boundary.</td>
+    </tr>
+    <tr>
+      <td><strong>MCP support</strong></td>
+      <td><span class="tag tag-green">Yes</span> &mdash; Connect MCP servers to the agent</td>
+      <td><span class="tag tag-green">Yes</span> &mdash; Full MCP support with local servers</td>
+    </tr>
+    <tr>
+      <td><strong>Subagents</strong></td>
+      <td><span class="tag tag-blue">Research preview</span> &mdash; Multi-agent is gated</td>
+      <td><span class="tag tag-green">Available</span> &mdash; Define specialized subagents in code</td>
+    </tr>
+    <tr>
+      <td><strong>Skills support</strong></td>
+      <td><span class="tag tag-green">Yes</span> &mdash; via Skills API</td>
+      <td><span class="tag tag-green">Yes</span> &mdash; via .claude/skills/ directories</td>
+    </tr>
+    <tr>
+      <td><strong>Windows/PowerShell native</strong></td>
+      <td><span class="tag tag-red">No</span> &mdash; Linux containers</td>
+      <td><span class="tag tag-yellow">Partial</span> &mdash; SDK is Python/TS, but runs on Windows with WSL or native Python</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>4. Three Possible Plays</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Play A: Agent SDK as the Next Orchestrator</h3>
+    <p><span class="tag tag-blue">Recommended evolution path</span></p>
+    <p>Replace <code>Run-Validator.ps1</code> with a Python Agent SDK wrapper. The agent reads articles from <code>provisional/</code>, orchestrates evaluation, writes structured results, and updates the ledger.</p>
+    <ul>
+      <li><strong>TD-001 path</strong> &mdash; Two options: (1) Agent-loop evaluation where Claude reasons directly (requires golden corpus benchmark to validate fidelity), or (2) Agent orchestrates but delegates evaluation to a clean Messages API call, preserving prompt isolation. Option 2 is lower-risk.</li>
+      <li>Preserves local state and hybrid deployment path (Bedrock/Vertex official; self-hosted via custom abstraction)</li>
+      <li>Hooks provide audit logging and governance enforcement points; implementation of exact EXIT_TOKEN_OVERFLOW semantics needs a custom layer on SDK primitives</li>
+      <li>Test suite runs unchanged</li>
+      <li>Subagents could split: one for evaluation, one for promotion prep</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Play B: Managed Agents for C&eacute;al or Future Projects</h3>
+    <p><span class="tag tag-blue">Better fit for other work</span></p>
+    <p>Managed Agents excels for long-running, cloud-native tasks where you don't need fine-grained state control. C&eacute;al (job automation) or a future content generation pipeline would be natural fits &mdash; tasks where the agent runs for minutes, does web research, generates artifacts, and reports back.</p>
+    <ul>
+      <li>No infrastructure to manage</li>
+      <li>Web search + fetch built in</li>
+      <li>Custom tools for external APIs (job boards, etc.)</li>
+      <li>Sessions persist through disconnections</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 1rem;">
+  <h3>Play C: Hybrid &mdash; SDK Now, Managed Later</h3>
+  <p><span class="tag tag-yellow">Evolutionary path</span></p>
+  <p>Start with the Agent SDK for LLM-Wiki (Play A). The Agent SDK is the safer default <em>unless</em> Managed Agents session persistence, event export, and externalized ledger writes are proven sufficient for the governance model. As Managed Agents matures out of beta &mdash; especially cross-session storage durability and multi-agent support &mdash; re-evaluate. The system prompt, policy bundle, and tool definitions would transfer directly; only the state management and evaluation isolation patterns need validation.</p>
+</div>
+
+<h2>5. Baseline Alternative: Keep Current Orchestrator, Add Messages API Provider</h2>
+
+<div class="card" style="border-left: 3px solid var(--yellow);">
+  <h3>Play 0: Wire the Existing Pipeline to the Messages API</h3>
+  <p><span class="tag tag-yellow">Lowest-risk path</span></p>
+  <p>Before evaluating either agent model, the most conservative TD-001 resolution is: keep <code>Run-Validator.ps1</code> and <code>validator_runner.py</code> exactly as designed, and implement a live provider that calls the Anthropic Messages API (or Bedrock/Vertex equivalent) in place of the stub. No orchestrator change. No new runtime. No agent loop.</p>
+
+  <table>
+    <thead>
+      <tr><th>Dimension</th><th>Play 0 (Messages API)</th><th>Play A (Agent SDK)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Scope of change</strong></td>
+        <td><span class="tag tag-green">Minimal</span> &mdash; One new provider module in <code>validator_runner.py</code></td>
+        <td><span class="tag tag-orange">Moderate</span> &mdash; Replace PowerShell orchestrator, restructure agent loop</td>
+      </tr>
+      <tr>
+        <td><strong>Evaluation fidelity</strong></td>
+        <td><span class="tag tag-green">Cleanest</span> &mdash; Direct API call, no agent-loop context contamination</td>
+        <td>Depends on path chosen (collapsed vs. separated). Separated path approaches Play 0 fidelity.</td>
+      </tr>
+      <tr>
+        <td><strong>Token budgeting</strong></td>
+        <td><span class="tag tag-green">Full control</span> &mdash; You set <code>max_tokens</code> per call, inspect usage in the response, and implement EXIT_TOKEN_OVERFLOW directly</td>
+        <td>SDK primitives available but require custom enforcement layer</td>
+      </tr>
+      <tr>
+        <td><strong>Ledger / governance</strong></td>
+        <td><span class="tag tag-green">Unchanged</span> &mdash; Existing PowerShell enforcement, no new attack surface</td>
+        <td>Requires PreToolUse gate or dedicated tool to preserve invariants</td>
+      </tr>
+      <tr>
+        <td><strong>Future extensibility</strong></td>
+        <td><span class="tag tag-yellow">Limited</span> &mdash; Still PowerShell-orchestrated, no autonomous reasoning, no tool use beyond what you script</td>
+        <td><span class="tag tag-green">High</span> &mdash; Agent can read articles, reason about edge cases, use web search, run subagents</td>
+      </tr>
+      <tr>
+        <td><strong>Hybrid deployment</strong></td>
+        <td><span class="tag tag-green">Native</span> &mdash; Provider abstraction is exactly where self-hosted models plug in</td>
+        <td>Official providers (Bedrock/Vertex/Azure) + custom abstraction for self-hosted</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="verdict">
+    <strong>When Play 0 is the right call:</strong> If the near-term goal is shipping a working live provider with minimal risk, Play 0 is the correct move. It closes TD-001 cleanly, preserves every existing invariant, and creates the provider abstraction layer that both the Agent SDK path and the self-hosted path need anyway.
+  </div>
+  <div class="verdict">
+    <strong>When Play A adds value over Play 0:</strong> If the pipeline needs to grow beyond deterministic script execution &mdash; e.g., the evaluator needs to reason about article context, fetch references, handle ambiguous policy edge cases, or coordinate multi-step promotion workflows &mdash; then the Agent SDK provides capabilities that a Messages API call cannot. Play 0 is the foundation; Play A is the evolution.
+  </div>
+  <p>These are not mutually exclusive. The disciplined path is: <strong>Play 0 first</strong> (wire the provider, close TD-001, validate against the golden corpus), then <strong>Play A as a follow-on</strong> if autonomous reasoning adds measurable value to evaluation quality or pipeline flexibility.</p>
+</div>
+
+<h2>6. What Would Change in LLM-Wiki (Play A)</h2>
+
+<div class="verdict">
+  <strong>If you went with Play A (Agent SDK):</strong>
+  <ul style="margin-top: 0.5rem;">
+    <li><strong>Run-Validator.ps1</strong> &rarr; <code>run_validator_agent.py</code> using <code>claude_agent_sdk.query()</code></li>
+    <li><strong>validator_runner.py</strong> &rarr; Recommended: keep as a structured tool the agent calls via a clean Messages API evaluation call (prompt isolation preserved). Alternative: collapse into agent reasoning, but <strong>benchmark against golden corpus first</strong></li>
+    <li><strong>Stub provider</strong> &rarr; TD-001 gets a concrete implementation path, not an automatic close. Fidelity benchmark is the decision gate.</li>
+    <li><strong>Token budgeting</strong> &rarr; SDK provides <code>max_budget_usd</code>, <code>max_turns</code>, per-step usage, and hook inspection points. EXIT_TOKEN_OVERFLOW (code 5) semantics require a custom enforcement layer on these primitives.</li>
+    <li><strong>Ledger writes</strong> &rarr; The agent must not write the ledger directly. Options: (1) <code>PreToolUse</code> hook that intercepts Edit/Write calls targeting the ledger path and rejects any non-append mutation, (2) a dedicated <code>append_ledger</code> custom tool that enforces append-only semantics server-side, or (3) an external append-only store (e.g., a local service or file-lock wrapper) that the agent cannot mutate directly. <code>PostToolUse</code> is insufficient &mdash; it runs after the write succeeds and cannot prevent or roll back a bad mutation.</li>
+    <li><strong>Gitea PR</strong> &rarr; Custom MCP server or tool definition wrapping Gitea API. TD-002 gets a clean implementation path.</li>
+    <li><strong>Human-in-the-loop</strong> &rarr; <code>AskUserQuestion</code> tool or permission gate before promotion</li>
+    <li><strong>Test suite</strong> &rarr; Unchanged. 196 assertions still run locally via pytest.</li>
+    <li><strong>Hybrid deployment</strong> &rarr; SDK supports Bedrock, Vertex, Azure natively. Self-hosted model fallback requires custom provider abstraction (not SDK-native).</li>
+  </ul>
+</div>
+
+<h2>7. Decision Gates and Open Questions</h2>
+
+<h3>Decision Gates (must resolve before committing)</h3>
+<ul>
+  <li><strong>Evaluation fidelity</strong> <span class="tag tag-red">Gating</span> &mdash; Agent-loop evaluation changes the prompt stack, tool context, and execution semantics versus a direct Messages API call with the same prompt. Before treating agent-loop evaluation as a TD-001 replacement, benchmark both approaches against the 42-fixture golden corpus. If fidelity diverges, the clean-call path (agent orchestrates, Messages API evaluates) becomes mandatory, not optional.</li>
+  <li><strong>Managed Agents session persistence semantics</strong> <span class="tag tag-yellow">Gating for Play C</span> &mdash; Managed Agents documents session-persistent filesystems. The unresolved question is whether this persistence survives session boundaries, supports append-only write semantics, and provides export/backup guarantees sufficient for the ledger invariant. If yes, Play C's timeline accelerates significantly.</li>
+</ul>
+
+<h3>Open Questions (inform but don't block)</h3>
+<ul>
+  <li><strong>Cost modeling:</strong> A full pipeline run involves ~N articles &times; K tokens per evaluation. The Agent SDK adds overhead from the agent loop (tool calls, reasoning tokens) on top of evaluation tokens. Model the per-article cost delta for both collapsed and separated evaluation paths.</li>
+  <li><strong>Prompt architecture compatibility:</strong> The existing persona library and mode packs are designed for direct prompting. How do they map onto agent system prompts and Skills? The SDK's Skills support (<code>.claude/skills/</code>) is a natural fit for the policy bundle.</li>
+  <li><strong>EXIT_TOKEN_OVERFLOW implementation:</strong> SDK provides <code>max_budget_usd</code>, <code>max_turns</code>, and per-step usage. An exact pre-generation hook reporting future token totals is not documented. The overflow semantics need a custom enforcement layer &mdash; design this before assuming budget control is solved.</li>
+</ul>
+
+<div class="footer">
+  <p>Generated April 8, 2026 (rev 3 &mdash; ledger enforcement corrected, baseline alternative added). Exploratory assessment, not a decision document.</p>
+  <p><strong>Sources (official documentation only):</strong>
+    <a href="https://platform.claude.com/docs/en/managed-agents/overview">Managed Agents overview</a> &middot;
+    <a href="https://platform.claude.com/docs/en/managed-agents/quickstart">Managed Agents quickstart</a> &middot;
+    <a href="https://platform.claude.com/docs/en/managed-agents/tools">Managed Agents tools</a> &middot;
+    <a href="https://platform.claude.com/docs/en/agent-sdk/overview">Agent SDK overview</a> &middot;
+    <a href="https://platform.claude.com/docs/en/agent-sdk/hooks">Agent SDK hooks</a>
+  </p>
+</div>
+
+</body>
+</html>

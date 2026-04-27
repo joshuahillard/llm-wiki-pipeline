@@ -1,0 +1,27 @@
+{
+  "decision": "reject",
+  "confidence": 0.95,
+  "reasoning": "Article embeds sensitive data in code examples including a Social Security number, production database credentials, a live API key pattern, and a personal email address. These must be replaced with clearly synthetic placeholders before publication.",
+  "policy_violations": [
+    {
+      "rule_id": "SECURITY-001",
+      "severity": "critical",
+      "description": "Hardcoded database password and API key in Example Configuration code block"
+    },
+    {
+      "rule_id": "SECURITY-002",
+      "severity": "critical",
+      "description": "Production database hostname exposed (db.internal.acme.com) in Example Configuration code block"
+    },
+    {
+      "rule_id": "SECURITY-003",
+      "severity": "critical",
+      "description": "Social Security number and personal email address embedded in Example Configuration code block"
+    }
+  ],
+  "recommendations": [
+    "Replace all credentials with clearly synthetic placeholders (e.g., YOUR_PASSWORD_HERE)",
+    "Use example.com domain for email and hostname placeholders",
+    "Remove the SSN entirely — it has no relevance to environment variable configuration"
+  ]
+}

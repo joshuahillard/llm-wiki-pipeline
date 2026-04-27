@@ -1,0 +1,9 @@
+```json
+{
+  "decision": "approve",
+  "confidence": 0.91,
+  "reasoning": "Article provides accurate, concise overview of load balancing fundamentals. No policy violations detected.",
+  "policy_violations": [],
+  "recommendations": []
+}
+```

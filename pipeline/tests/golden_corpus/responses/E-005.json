@@ -1,0 +1,16 @@
+{
+  "decision": "escalate",
+  "confidence": 0.65,
+  "reasoning": "The article is built around Node.js 18 LTS, which entered maintenance mode in October 2025 and reaches end-of-life in April 2026. The article acknowledges the EOL timeline and recommends migration, but the setup instructions, code examples, and dependency choices all target Node.js 18 as the active baseline. This is a borderline case: the tooling is not yet EOL and is still receiving security patches, but promoting a guide that will become stale within weeks is a judgment call that should be made by an editor with knowledge of the target audience's migration timeline.",
+  "policy_violations": [
+    {
+      "rule_id": "ACCURACY-002",
+      "description": "The article's primary runtime target (Node.js 18 LTS) is in maintenance mode and approaching end-of-life in April 2026. While not yet EOL, the setup guide will become outdated imminently.",
+      "severity": "major"
+    }
+  ],
+  "recommendations": [
+    "Consider updating the guide to target Node.js 20 LTS or Node.js 22 LTS as the primary runtime.",
+    "If the guide is intended for teams still on Node.js 18, add a prominent migration notice at the top of the article."
+  ]
+}

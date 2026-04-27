@@ -1,0 +1,15 @@
+{
+  "decision": "approve",
+  "confidence": 0.82,
+  "reasoning": "The article is technically accurate and well-structured, but it lacks a top-level heading (H1). The content begins directly with prose after the frontmatter. This is a minor formatting gap that does not affect the article's correctness or usefulness.",
+  "policy_violations": [
+    {
+      "rule_id": "FORMATTING-001",
+      "description": "The article body does not contain a top-level heading (H1). It begins with a paragraph rather than a '# Title' heading.",
+      "severity": "minor"
+    }
+  ],
+  "recommendations": [
+    "Add a top-level heading (e.g., '# DNS Resolution Internals') at the beginning of the article body."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "decision": "approve",
+  "confidence": 0.9,
+  "reasoning": "Nested delimiter strings in the article body do not affect frontmatter parsing, and the underlying content is valid.",
+  "policy_violations": [],
+  "recommendations": [
+    "No action required."
+  ]
+}

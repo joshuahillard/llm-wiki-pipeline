@@ -1,0 +1,20 @@
+{
+  "decision": "escalate",
+  "confidence": 0.71,
+  "reasoning": "The article contains oversimplified and weakly supported claims that are concerning but could be defensible in narrower contexts. Escalation is safer than forced approval or rejection.",
+  "policy_violations": [
+    {
+      "rule_id": "ACCURACY-003",
+      "description": "The article makes an oversimplified claim that could mislead readers without additional caveats.",
+      "severity": "major"
+    },
+    {
+      "rule_id": "ACCURACY-004",
+      "description": "The article includes quantitative claims without attribution or supporting evidence.",
+      "severity": "minor"
+    }
+  ],
+  "recommendations": [
+    "Clarify the scope of the claims and add sources for the quantitative statements."
+  ]
+}

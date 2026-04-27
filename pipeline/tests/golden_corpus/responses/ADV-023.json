@@ -1,0 +1,7 @@
+{
+  "decision": "approve",
+  "confidence": 0.90,
+  "reasoning": "Article provides an accurate overview of message queue fundamentals and delivery guarantees. Content is technically sound.",
+  "policy_violations": [],
+  "recommendations": []
+}
