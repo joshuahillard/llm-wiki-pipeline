@@ -6,17 +6,19 @@ The pipeline takes draft articles in `pipeline/provisional/`, evaluates them aga
 
 ## Status
 
-**Current phase:** Phase 1.7 (per `PROJECT_LEDGER.md`, last updated April 26, 2026)
+**Current phase:** Phase 1.9 (per `PROJECT_LEDGER.md`, last updated April 27, 2026)
 
 | Area | State |
 |------|-------|
 | Parser harness | 59 / 59 assertions passing |
 | Validator harness | 225 / 225 assertions passing |
-| Integration harness | 76 / 76 assertions passing (approve / reject / escalate decision paths + determinism check) |
-| Combined `--stage all` | 320 / 320 passing, 0 failing, **exit 0** |
+| Integration harness | 83 / 83 assertions passing (approve / reject / escalate decision paths + determinism check; F7 allowlist inverted Phase 1.9) |
+| Promote-local harness | 31 / 31 assertions passing (TD-002 part 1 boundary tests) |
+| Promote-full harness | 30 / 30 assertions passing (TD-002 part 2 — success / push-fail / PR-fail-after-push / idempotent-rerun paths) |
+| Combined `--stage all` | 387 / 387 passing, 0 failing, **exit 0** |
 | Golden corpus fixtures | 50 (52% adversarial ratio) |
 | LLM provider | Anthropic Claude Sonnet 4.6 — wired in `pipeline/validator_runner.py`, **smoke-tested live in Phase 1.6** (decision=`approve`, confidence `0.91`, ~8.2s end-to-end) |
-| Promotion path | Scaffolded with Gitea client, declined-PR reconciliation, and branch-existence check; **gated behind a hard fail until git-push wiring lands (TD-002)** |
+| Promotion path | **Fully wired (Phase 1.9):** local-git → push → PR creation → audit → JSONL `promotion_completed` event. Tree-SHA equivalence (P0-8) implemented as Option B (git fetch + rev-parse). Live-smoke-tested 2026-04-27 against an external throwaway Gitea (clean publish + idempotent re-run). |
 
 ### Technical Debt Register (summary)
 
@@ -25,7 +27,7 @@ See `PROJECT_LEDGER.md` § Technical Debt Register for full detail.
 | ID | Status | Note |
 |----|--------|------|
 | TD-001 | **Closed** (Phase 1.5) | Model-specific tokenizer wired via Anthropic `count_tokens` API, with byte-estimate fallback |
-| TD-002 | **Narrowed** (Phase 1.5) | Gitea integration scaffolded, live PR creation behind hard fail pending git-push + workspace-rollback work |
+| TD-002 | **Closed** (Phase 1.9) | Live push + PR creation + tree-SHA equivalence (P0-8) all wired; live-smoke-tested against an external throwaway Gitea |
 | TD-003 | **Closed** (Phase 1.0) | Deterministic repo-root-relative identity in `parse_identity.py` |
 | TD-004 | Open | Documentation alignment across portfolio entry points |
 
@@ -144,8 +146,10 @@ Some artifacts referenced in the project ledger are working material maintained 
 
 ## Roadmap (next engineering steps)
 
-1. **Wire the git-push + workspace-rollback path** in `Promote-ToVerified.ps1` to close the remaining TD-002 gap.
-2. **Surface `article_token_count` in ledger entries** — the count is computed during budget check in `validator_runner.py` (exact, via Anthropic `count_tokens`) but is not currently threaded back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
-3. **Emit a positive `INFO: token_method=...` log line on every run** so future smoke tests have explicit evidence of the live tokenizer path rather than inferring success from the absence of a fallback warning. Phase 1.6 follow-up.
-4. **README and portfolio doc audit** to fully close TD-004.
-5. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).
+1. **Bare-repo fixture for `promote-full` tree-equivalence paths** — `Test-RemoteTreeEquivalence` is in production (Phase 1.9) but the tree-match and tree-mismatch paths in `promote-full` were deferred. They need a bare-repo "remote" set up locally so the real `git fetch` runs against a controlled state. Recommended next phase.
+2. **Live orphan-recovery smoke test** — Phase 1.9 covered clean-publish and idempotent-rerun scenarios. The orphan-recovery path (delete PR + leave branch + re-run + verify `Test-RemoteTreeEquivalence` fires correctly against real Gitea) was not exercised live. Manual one-off using the same throwaway-repo flow.
+3. **CI-time mock-vs-real shape parity assertion** — `pipeline/tests/fixtures/gitea_pr_response_shape.json` documents the expected real-response field set; an optional CI step could load it and verify a configured throwaway Gitea returns the consumer-required subset. Phase 1.9 captured this manually.
+4. **Surface `article_token_count` in ledger entries** — the count is computed during budget check in `validator_runner.py` (exact, via Anthropic `count_tokens`) but is not currently threaded back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
+5. **Emit a positive `INFO: token_method=...` log line on every run** so future smoke tests have explicit evidence of the live tokenizer path rather than inferring success from the absence of a fallback warning. Phase 1.6 follow-up.
+6. **README and portfolio doc audit** to fully close TD-004.
+7. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).

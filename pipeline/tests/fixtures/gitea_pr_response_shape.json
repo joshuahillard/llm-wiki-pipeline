@@ -1,0 +1,90 @@
+{
+  "_meta": {
+    "purpose": "Mock-vs-real Gitea PR response shape parity reference, captured during Phase 1.9 / TD-002 part 2 live smoke test.",
+    "captured_utc": "2026-04-27",
+    "endpoint": "GET /api/v1/repos/{owner}/{repo}/pulls/{number}",
+    "rigor_item": "Item 2 of the max-rigor checklist (mock-vs-real shape parity).",
+    "consumer_code_paths": [
+      "Promote-ToVerified.ps1: Invoke-DeclinedPrReconciliation reads pr.number, pr.title, pr.state, pr.merged, pr.head.ref, pr.head.sha, pr.base.ref, pr.user.login, pr.created_at, pr.updated_at, pr.closed_at, pr.merged_at, pr.merge_base",
+      "Promote-ToVerified.ps1: existing-PR check at Step 2 reads pr.number",
+      "Promote-ToVerified.ps1: post-PR-creation extracts pr.number, pr.html_url, pr.url"
+    ],
+    "parity_status": "All consumer-code-relevant fields are present in real Gitea responses. Mock subsets in Invoke-GiteaApi (pr_success / pr_fail / existing_open_pr modes) cover the consumer needs."
+  },
+  "real_top_level_field_names": [
+    "additions",
+    "allow_maintainer_edit",
+    "assignee",
+    "assignees",
+    "base",
+    "body",
+    "changed_files",
+    "closed_at",
+    "comments",
+    "content_version",
+    "created_at",
+    "deletions",
+    "diff_url",
+    "draft",
+    "due_date",
+    "head",
+    "html_url",
+    "id",
+    "is_locked",
+    "labels",
+    "merge_base",
+    "merge_commit_sha",
+    "mergeable",
+    "merged",
+    "merged_at",
+    "merged_by",
+    "milestone",
+    "number",
+    "patch_url",
+    "pin_order",
+    "requested_reviewers",
+    "requested_reviewers_teams",
+    "review_comments",
+    "state",
+    "title",
+    "updated_at",
+    "url",
+    "user"
+  ],
+  "real_head_field_names": [
+    "label",
+    "ref",
+    "repo",
+    "repo_id",
+    "sha"
+  ],
+  "real_base_field_names": [
+    "label",
+    "ref",
+    "repo",
+    "repo_id",
+    "sha"
+  ],
+  "consumer_required_fields": {
+    "top_level": [
+      "number",
+      "title",
+      "state",
+      "html_url",
+      "url",
+      "merged",
+      "head",
+      "base",
+      "user",
+      "created_at",
+      "updated_at",
+      "closed_at",
+      "merged_at",
+      "merge_base"
+    ],
+    "head": ["ref", "sha"],
+    "base": ["ref"],
+    "user": ["login"]
+  },
+  "consumer_field_parity_check": "PASS - every field in consumer_required_fields exists in the real response."
+}

@@ -167,6 +167,13 @@ _DETERMINISM_STRIP_FIELDS = frozenset({
     # everything that is genuinely deterministic.
     "promotion_error",
     "stderr",
+    # Phase 1.9 / 03b: the new local-git commit SHA depends on the commit's
+    # author/committer timestamp, which varies by construction across runs.
+    # The same SHA appears as commit_sha (in promotion_completed) and
+    # pushed_sha (in promotion_push_completed); strip both.
+    "commit_sha",
+    "pushed_sha",
+    "local_commit_sha",
 })
 
 
@@ -874,18 +881,50 @@ def _run_orchestration_once(pwsh_path, fixture_path, work_root, env_overrides):
     """
     state_dir = work_root / "state"
     provisional_dir = work_root / "provisional"
+    verified_dir = work_root / "verified"
     state_dir.mkdir(exist_ok=True)
     provisional_dir.mkdir(exist_ok=True)
+    verified_dir.mkdir(exist_ok=True)
 
+    # Phase 1.9 / 03b: initialize work_root as a real git repo so the new
+    # local-git + push + PR flow can run end-to-end against the pr_success
+    # mock.  Pre-Phase-1.9 the integration stage threw at the credentials
+    # gate before reaching local-git, so a non-git work_root was acceptable.
+    # Now we go all the way to PR creation, which requires a real worktree
+    # operation rooted at -RepoRoot.
+    (provisional_dir / ".gitkeep").write_text("")
+    (verified_dir / ".gitkeep").write_text("")
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "integration@harness.local"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "integration-harness"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "main"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."], cwd=work_root, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "init"],
+        cwd=work_root, check=True, capture_output=True,
+    )
+
+    # Stage the fixture LAST so it does not enter git history.
     staged = provisional_dir / fixture_path.name
     shutil.copy2(fixture_path, staged)
 
     env = os.environ.copy()
     env.update(env_overrides)
     env.pop("ANTHROPIC_API_KEY", None)
-
-    verified_dir = work_root / "verified"
-    verified_dir.mkdir(exist_ok=True)
 
     cmd = [
         pwsh_path,
@@ -998,44 +1037,79 @@ def _assert_orchestration_run(label, expected_decision, run_data):
             actual_exit,
         )
 
-    # --- operational_fault (F7 allowlist for approve only) ---
+    # --- operational_fault (Phase 1.9 / 03b: F7 allowlist inverted) ---
+    # All decision paths now expect 0 operational_fault events.  The Phase 1.7
+    # F7 fault on approve was a placeholder for "TD-002 not yet wired"; with
+    # 03b's pr_success mock-mode flow, PR creation succeeds and no fault fires.
     op_faults = [e for e in events if e.get("event_type") == "operational_fault"]
-    expected_fault_count = 1 if expected_decision == "approve" else 0
     add(
-        len(op_faults) == expected_fault_count,
-        f"operational_fault count == {expected_fault_count} ({len(op_faults)} found)",
-        expected_fault_count,
+        len(op_faults) == 0,
+        f"operational_fault count == 0 (Phase 1.9: F7 allowlist inverted; {len(op_faults)} found)",
+        0,
         len(op_faults),
     )
 
+    # --- promotion_completed (positive assertion for approve only) ---
+    promotion_events = [e for e in events if e.get("event_type") == "promotion_completed"]
+    expected_promotion_count = 1 if expected_decision == "approve" else 0
+    add(
+        len(promotion_events) == expected_promotion_count,
+        f"promotion_completed count == {expected_promotion_count} ({len(promotion_events)} found)",
+        expected_promotion_count,
+        len(promotion_events),
+    )
+
     if expected_decision == "approve":
-        if op_faults:
-            f7 = op_faults[0]
+        if promotion_events:
+            pc = promotion_events[0]
             add(
-                f7.get("fmea_ref") == "F7",
-                "F7 fault: fmea_ref == 'F7'",
-                "F7",
-                f7.get("fmea_ref"),
+                pc.get("pr_number") == 1,
+                "promotion_completed.pr_number == 1 (mocked PR id)",
+                1,
+                pc.get("pr_number"),
+            )
+            branch_alias = pc.get("branch_alias")
+            add(
+                isinstance(branch_alias, str) and branch_alias.startswith("auto/"),
+                "promotion_completed.branch_alias starts with 'auto/'",
+                "starts with auto/",
+                branch_alias,
+            )
+            commit_sha = pc.get("commit_sha")
+            add(
+                isinstance(commit_sha, str) and len(commit_sha) >= 40,
+                "promotion_completed.commit_sha is a 40-char hex string",
+                "40-char hex",
+                f"length={len(commit_sha) if isinstance(commit_sha, str) else 'n/a'}",
             )
             add(
-                f7.get("message") == "promotion_gated_pending_remote_wiring",
-                "F7 fault: message == 'promotion_gated_pending_remote_wiring'",
-                "promotion_gated_pending_remote_wiring",
-                f7.get("message"),
+                pc.get("pushed_to_remote") is True,
+                "promotion_completed.pushed_to_remote == True (push path exercised)",
+                True,
+                pc.get("pushed_to_remote"),
+            )
+            add(
+                pc.get("tree_sha_check") == "skipped",
+                "promotion_completed.tree_sha_check == 'skipped' (no orphan branch in mock)",
+                "skipped",
+                pc.get("tree_sha_check"),
             )
         else:
-            add(
-                False,
-                "F7 fault: missing (no operational_fault event present)",
-                "F7 fault present",
-                "no faults",
-            )
-            add(
-                False,
-                "F7 fault message: missing (no operational_fault event present)",
-                "promotion_gated_pending_remote_wiring",
-                "no faults",
-            )
+            # Pad with no-op failures so the assertion count matches the success
+            # path (5 sub-assertions).  Each reports the missing-event explicitly.
+            for missing_label in (
+                "promotion_completed.pr_number",
+                "promotion_completed.branch_alias",
+                "promotion_completed.commit_sha",
+                "promotion_completed.pushed_to_remote",
+                "promotion_completed.tree_sha_check",
+            ):
+                add(
+                    False,
+                    f"{missing_label}: missing (no promotion_completed event present)",
+                    "field present",
+                    "no event",
+                )
 
     # --- run_completed ---
     completed_run = [e for e in events if e.get("event_type") == "run_completed"]
@@ -1049,10 +1123,11 @@ def _assert_orchestration_run(label, expected_decision, run_data):
     if completed_run:
         summary = completed_run[0].get("summary", {}) or {}
         actual_faults = summary.get("faults", 0)
+        # Phase 1.9 / 03b: F7 allowlist inverted - all decisions expect 0 faults.
         add(
-            actual_faults == expected_fault_count,
-            f"run_completed.summary.faults == {expected_fault_count}",
-            expected_fault_count,
+            actual_faults == 0,
+            f"run_completed.summary.faults == 0 ({actual_faults} found)",
+            0,
             actual_faults,
         )
 
@@ -1294,7 +1369,19 @@ def run_integration_tests(integration_fixtures):
                     pwsh_path=pwsh_path,
                     fixture_path=fixture_path,
                     work_root=work_root,
-                    env_overrides={"LLM_WIKI_STUB_DECISION": decision},
+                    env_overrides={
+                        "LLM_WIKI_STUB_DECISION": decision,
+                        # Phase 1.9 / 03b: drive the post-DryRun flow under the
+                        # pr_success mock so the integration stage exercises
+                        # local-git + push + PR creation end-to-end without
+                        # contacting any live Gitea.
+                        "LLM_WIKI_GITEA_MOCK_MODE": "pr_success",
+                        "GITEA_URL":         "https://mock.local",
+                        "GITEA_TOKEN":       "mock-token",
+                        "GITEA_REPO_OWNER":  "mock-owner",
+                        "GITEA_REPO_NAME":   "mock-repo",
+                        "GITEA_BASE_BRANCH": "main",
+                    },
                 )
             except subprocess.TimeoutExpired:
                 all_results.append(
@@ -1414,11 +1501,16 @@ def _setup_promote_local_repo(work_root, fixture_path):
     }
 
 
-def _run_promote(pwsh_path, repo, work_root, dry_run):
+def _run_promote(pwsh_path, repo, work_root, dry_run, env_overrides=None):
     """Invoke Promote-ToVerified.ps1 in the temp repo with mocked Gitea.
 
     Returns dict with returncode, stdout, stderr, audit_files (list of
     (path, parsed_json or None)), jsonl_events (list of dicts).
+
+    env_overrides (optional): merged on top of the default mock env.  Used by
+    promote-full to switch mock modes (pr_success, pr_fail, push_fail,
+    existing_open_pr).  Default behavior (LLM_WIKI_GITEA_MOCK_MODE=local_only)
+    is preserved when env_overrides is None - matches Phase 1.8 contract.
     """
     env = os.environ.copy()
     env["LLM_WIKI_GITEA_MOCK_MODE"] = "local_only"
@@ -1427,6 +1519,8 @@ def _run_promote(pwsh_path, repo, work_root, dry_run):
     env["GITEA_REPO_OWNER"] = "mock-owner"
     env["GITEA_REPO_NAME"] = "mock-repo"
     env.pop("ANTHROPIC_API_KEY", None)
+    if env_overrides:
+        env.update(env_overrides)
 
     cmd = [
         pwsh_path,
@@ -1697,55 +1791,68 @@ def _assert_live_run(label, run_data):
     return results
 
 
-def _assert_failure_path(label, run_data):
-    """Assertions for the failure path (branch already exists)."""
+def _assert_idempotent_rerun(label, run_data):
+    """Assertions for the idempotent re-run path under local_only mock.
+
+    Phase 1.9 / 03b extended Invoke-StartupReconciliation to auto-clean
+    orphan worktrees whose remote branch is gone (404 in local_only mock).
+    The second run therefore succeeds local-git promotion afresh and throws
+    at the local_only post-local-git boundary - same shape as the first
+    live run, plus a startup reconciliation cleanup line.
+
+    Pre-Phase-1.9 behavior was "fail loudly with branch already exists";
+    that contract was explicitly anticipated to change in 03b per the
+    Phase 1.8 ledger entry.
+    """
     results = []
 
     def add(passed, message, expected, actual):
         results.append(TestResult(label, "promote-local", passed, message, expected, actual))
 
     rc = run_data["returncode"]
-    add(rc != 0, f"failure-path exit code is non-zero (got {rc})",
+    add(rc != 0,
+        f"rerun exit code is non-zero (local_only still throws post-local-git, got {rc})",
         "non-zero", rc)
 
     combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+
     add(
-        "already exists" in combined,
-        "failure-path output references 'already exists'",
+        "promotion_gated_pending_remote_wiring" in combined,
+        "rerun output contains 'promotion_gated_pending_remote_wiring'",
         "substring present",
-        "missing" if "already exists" not in combined else "ok",
+        "missing" if "promotion_gated_pending_remote_wiring" not in combined else "ok",
     )
 
-    # Promote should NOT have created a second worktree.
     add(
-        "Local git promotion failed" in combined,
-        "failure-path raises 'Local git promotion failed'",
+        "Startup reconciliation removed" in combined,
+        "rerun output reports startup reconciliation cleaned an orphan worktree",
         "substring present",
-        "missing" if "Local git promotion failed" not in combined else "ok",
+        "missing" if "Startup reconciliation removed" not in combined else "ok",
     )
 
-    # JSONL fault should be emitted with the canonical category and step.
-    faults = [
+    # Idempotent-recovery contract: rerun should NOT emit PROMOTION_LOCAL_GIT_FAILED
+    # because the orphan was auto-cleaned before Invoke-LocalGitPromotion's
+    # branch-already-exists precheck ran.
+    local_git_faults = [
         e for e in run_data["jsonl_events"]
         if e.get("fault_category") == "PROMOTION_LOCAL_GIT_FAILED"
     ]
     add(
-        len(faults) >= 1,
-        f"failure path emits >=1 PROMOTION_LOCAL_GIT_FAILED fault ({len(faults)} found)",
-        ">=1", len(faults),
+        len(local_git_faults) == 0,
+        f"rerun emits no PROMOTION_LOCAL_GIT_FAILED faults (orphan auto-cleaned, {len(local_git_faults)} found, expected 0)",
+        0, len(local_git_faults),
     )
-    if faults:
-        latest = faults[-1]
-        add(
-            latest.get("fmea_ref") == "F7",
-            "fault fmea_ref == 'F7'",
-            "F7", latest.get("fmea_ref"),
-        )
-        add(
-            latest.get("step") == "branch_already_exists",
-            "fault step == 'branch_already_exists'",
-            "branch_already_exists", latest.get("step"),
-        )
+
+    # The new run should have produced a fresh worktree (different from the
+    # first run's, but we don't have cross-run state).  Instead assert that
+    # at least one worktree path is named in stdout/stderr - a sanity check
+    # that local-git produced a tempdir.
+    add(
+        "llm-wiki-promote-" in combined,
+        "rerun output references a fresh llm-wiki-promote-* worktree path",
+        "substring present",
+        "missing" if "llm-wiki-promote-" not in combined else "ok",
+    )
 
     return results
 
@@ -1756,7 +1863,9 @@ def run_promote_local_tests():
     Exercises Promote-ToVerified.ps1 directly (not via Run-Validator):
       1. -DryRun: audit preview produced with new local_commit_sha/worktree_path keys (null in dry-run)
       2. Live run with mocked Gitea: worktree created, article copied, commit on new branch, post-local-git throw fires
-      3. Second live run with same article: branch-already-exists fail-loudly path
+      3. Second live run with same article: idempotent recovery via startup
+         reconciliation (orphan worktree from run 2 auto-cleaned, second
+         local-git proceeds fresh, post-local-git throw fires again)
 
     Returns (results, skipped_reason_or_None).
     """
@@ -1809,8 +1918,10 @@ def run_promote_local_tests():
         else:
             all_results.extend(_assert_live_run("promote-local:live", live))
 
-        # Second live run: branch already exists from the first run, so
-        # Promote should fail loudly without creating a second worktree.
+        # Second live run: orphan worktree from run 2 should be auto-cleaned
+        # by Invoke-StartupReconciliation (Phase 1.9 / 03b worktree-orphan
+        # sweep), then a fresh local-git promotion runs and throws again at
+        # the local_only post-local-git boundary.
         try:
             second = _run_promote(pwsh_path, repo, work_root, dry_run=False)
         except subprocess.TimeoutExpired:
@@ -1820,7 +1931,7 @@ def run_promote_local_tests():
                 "completes within timeout", "subprocess hung",
             ))
         else:
-            all_results.extend(_assert_failure_path("promote-local:rerun", second))
+            all_results.extend(_assert_idempotent_rerun("promote-local:rerun", second))
     finally:
         _cleanup_promote_local_worktrees(work_root)
         try:
@@ -1832,13 +1943,366 @@ def run_promote_local_tests():
     return all_results, None
 
 
+# ---------------------------------------------------------------------------
+# promote-full stage (Phase 1.9 / TD-002 part 2)
+# ---------------------------------------------------------------------------
+# Exercises the full Promote-ToVerified.ps1 flow under the new mock modes
+# introduced by 03b: pr_success (happy path), push_fail (rollback after
+# local-git, before push success), pr_fail (rollback after push success,
+# remote branch deletion), existing_open_pr (idempotent re-run short-circuit).
+#
+# Tree-equivalence paths (orphan-recovery: tree_match, tree_mismatch) are
+# deferred to a follow-up phase - they need a bare-repo fixture and the real
+# fetch path is exercised by the live throwaway smoke test (Stage 8).
+
+
+def _assert_full_success_path(label, run_data):
+    """Happy path: pr_success mock - push mocked, PR creation mocked-success."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-full", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc == 0, f"success-path exit code is 0 ({rc})", 0, rc)
+
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    add(
+        "Promotion complete: PR #1" in combined,
+        "success-path stdout reports 'Promotion complete: PR #1'",
+        "substring present",
+        "missing" if "Promotion complete: PR #1" not in combined else "ok",
+    )
+
+    # promotion_completed JSONL event with structured fields.
+    promotion_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_completed"
+    ]
+    add(
+        len(promotion_events) == 1,
+        f"exactly one promotion_completed event ({len(promotion_events)} found)",
+        1, len(promotion_events),
+    )
+    if promotion_events:
+        pc = promotion_events[0]
+        add(pc.get("pr_number") == 1, "promotion_completed.pr_number == 1", 1, pc.get("pr_number"))
+        add(
+            isinstance(pc.get("commit_sha"), str) and len(pc["commit_sha"]) >= 40,
+            "promotion_completed.commit_sha is 40-char hex",
+            "40-char hex",
+            f"length={len(pc['commit_sha']) if isinstance(pc.get('commit_sha'), str) else 'n/a'}",
+        )
+        add(
+            isinstance(pc.get("branch_alias"), str) and pc["branch_alias"].startswith("auto/"),
+            "promotion_completed.branch_alias starts with 'auto/'",
+            "starts with auto/",
+            pc.get("branch_alias"),
+        )
+        add(
+            pc.get("pushed_to_remote") is True,
+            "promotion_completed.pushed_to_remote == True",
+            True,
+            pc.get("pushed_to_remote"),
+        )
+
+    # promotion_push_completed positive log line.
+    push_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_push_completed"
+    ]
+    add(
+        len(push_events) == 1,
+        f"exactly one promotion_push_completed event ({len(push_events)} found)",
+        1, len(push_events),
+    )
+    if push_events:
+        pe = push_events[0]
+        add(
+            pe.get("mocked") is True,
+            "promotion_push_completed.mocked == True (pr_success mode skipped real push)",
+            True, pe.get("mocked"),
+        )
+
+    # No operational_fault on success path.
+    faults = [e for e in run_data["jsonl_events"] if e.get("event_type") == "operational_fault"]
+    add(
+        len(faults) == 0,
+        f"success path emits no operational_fault events ({len(faults)} found)",
+        0, len(faults),
+    )
+
+    # Audit file has pr_number=1 and pr_url populated.
+    if run_data["audit_files"]:
+        audit_name, audit_data = run_data["audit_files"][0]
+        if audit_data:
+            add(
+                audit_data.get("pr_number") == 1,
+                "audit.pr_number == 1",
+                1, audit_data.get("pr_number"),
+            )
+            pr_url = audit_data.get("pr_url")
+            add(
+                isinstance(pr_url, str) and len(pr_url) > 0,
+                "audit.pr_url is a non-empty string",
+                "non-empty string",
+                pr_url,
+            )
+
+    return results
+
+
+def _assert_full_push_fail_path(label, run_data):
+    """Push-fail path: push_fail mock - synthetic push failure, rollback expected."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-full", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc != 0, f"push-fail exit code is non-zero ({rc})", "non-zero", rc)
+
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    add(
+        "Simulated push failure" in combined,
+        "push-fail output references the synthetic push failure",
+        "substring present",
+        "missing" if "Simulated push failure" not in combined else "ok",
+    )
+
+    # PROMOTION_PUSH_FAILED fault should be emitted.
+    push_faults = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "operational_fault"
+        and e.get("fault_category") == "PROMOTION_PUSH_FAILED"
+    ]
+    add(
+        len(push_faults) >= 1,
+        f"push-fail emits >=1 PROMOTION_PUSH_FAILED fault ({len(push_faults)} found)",
+        ">=1", len(push_faults),
+    )
+    if push_faults:
+        latest = push_faults[-1]
+        add(latest.get("fmea_ref") == "F7", "push fault fmea_ref == 'F7'", "F7", latest.get("fmea_ref"))
+        add(
+            latest.get("step") == "git_push_promotion",
+            "push fault step == 'git_push_promotion'",
+            "git_push_promotion", latest.get("step"),
+        )
+
+    # No promotion_completed event - rollback prevented progress.
+    promotion_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_completed"
+    ]
+    add(
+        len(promotion_events) == 0,
+        f"push-fail emits no promotion_completed event ({len(promotion_events)} found)",
+        0, len(promotion_events),
+    )
+
+    return results
+
+
+def _assert_full_pr_fail_path(label, run_data):
+    """PR-fail-after-push path: pr_fail mock - PR creation API errors after
+    push success, remote branch deletion attempted, rollback expected."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-full", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc != 0, f"pr-fail exit code is non-zero ({rc})", "non-zero", rc)
+
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    add(
+        "PR creation failed" in combined,
+        "pr-fail output references 'PR creation failed'",
+        "substring present",
+        "missing" if "PR creation failed" not in combined else "ok",
+    )
+    add(
+        "Remote branch cleanup: succeeded" in combined,
+        "pr-fail output reports remote branch cleanup attempted (mocked DELETE returns 204)",
+        "substring present",
+        "missing" if "Remote branch cleanup: succeeded" not in combined else "ok",
+    )
+
+    # PROMOTION_PR_FAILED fault should be emitted.
+    pr_faults = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "operational_fault"
+        and e.get("fault_category") == "PROMOTION_PR_FAILED"
+    ]
+    add(
+        len(pr_faults) >= 1,
+        f"pr-fail emits >=1 PROMOTION_PR_FAILED fault ({len(pr_faults)} found)",
+        ">=1", len(pr_faults),
+    )
+    if pr_faults:
+        latest = pr_faults[-1]
+        add(latest.get("step") == "pr_creation", "pr fault step == 'pr_creation'", "pr_creation", latest.get("step"))
+
+    # promotion_push_completed should still have fired (push completed before PR fail).
+    push_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_push_completed"
+    ]
+    add(
+        len(push_events) == 1,
+        f"pr-fail emitted push_completed before PR fail ({len(push_events)} found)",
+        1, len(push_events),
+    )
+
+    # No promotion_completed event.
+    promotion_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_completed"
+    ]
+    add(
+        len(promotion_events) == 0,
+        f"pr-fail emits no promotion_completed event ({len(promotion_events)} found)",
+        0, len(promotion_events),
+    )
+
+    return results
+
+
+def _assert_full_idempotent_path(label, run_data):
+    """Idempotent re-run path: existing_open_pr mock - branch + open PR exist,
+    Promote should short-circuit at exit 0 with no new push or PR."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-full", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc == 0, f"idempotent re-run exit code is 0 ({rc})", 0, rc)
+
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    add(
+        "Existing open PR #1 found" in combined,
+        "idempotent path stdout reports 'Existing open PR #1 found'",
+        "substring present",
+        "missing" if "Existing open PR #1 found" not in combined else "ok",
+    )
+
+    # No new promotion_completed event - short-circuit happened.
+    promotion_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_completed"
+    ]
+    add(
+        len(promotion_events) == 0,
+        f"idempotent path emits no promotion_completed event ({len(promotion_events)} found)",
+        0, len(promotion_events),
+    )
+
+    # No push event - short-circuit happened before push.
+    push_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_push_completed"
+    ]
+    add(
+        len(push_events) == 0,
+        f"idempotent path emits no promotion_push_completed event ({len(push_events)} found)",
+        0, len(push_events),
+    )
+
+    # No operational_fault.
+    faults = [e for e in run_data["jsonl_events"] if e.get("event_type") == "operational_fault"]
+    add(
+        len(faults) == 0,
+        f"idempotent path emits no operational_fault events ({len(faults)} found)",
+        0, len(faults),
+    )
+
+    return results
+
+
+def run_promote_full_tests():
+    """Run the promote-full stage assertions.
+
+    Exercises Promote-ToVerified.ps1 directly under the new 03b mock modes.
+    Each path uses a fresh temp repo so state is isolated.
+
+      1. pr_success (success path): full happy flow, audit + JSONL evidence
+      2. push_fail (push failure): synthetic push failure, rollback verified
+      3. pr_fail (PR-creation failure after push): rollback + branch deletion
+      4. existing_open_pr (idempotent re-run): short-circuit at Step 2
+
+    Tree-match and tree-mismatch paths are deferred (need bare-repo fixture);
+    the real push path is exercised by the live throwaway smoke test (Stage 8).
+
+    Returns (results, skipped_reason_or_None).
+    """
+    pwsh_path = _check_pwsh_available()
+    if pwsh_path is None:
+        return [], (
+            "pwsh (PowerShell 7+) not found on PATH. The promote-full stage "
+            "requires pwsh; powershell.exe is intentionally not used."
+        )
+
+    if not PROMOTE_SCRIPT_PATH.exists():
+        return [TestResult(
+            "promote-full", "promote-full", False,
+            f"Promote-ToVerified.ps1 not found: {PROMOTE_SCRIPT_PATH}",
+            "script exists", "missing",
+        )], None
+
+    fixture_path = CORPUS_DIR / PROMOTE_LOCAL_FIXTURE_REL
+    if not fixture_path.exists():
+        return [TestResult(
+            "promote-full", "promote-full", False,
+            f"Fixture not found: {fixture_path}",
+            "file exists", "missing",
+        )], None
+
+    all_results = []
+
+    paths = [
+        ("promote-full:success",     "pr_success",        _assert_full_success_path),
+        ("promote-full:push-fail",   "push_fail",         _assert_full_push_fail_path),
+        ("promote-full:pr-fail",     "pr_fail",           _assert_full_pr_fail_path),
+        ("promote-full:idempotent",  "existing_open_pr",  _assert_full_idempotent_path),
+    ]
+
+    for label, mock_mode, assert_fn in paths:
+        work_root = Path(tempfile.mkdtemp(prefix="llm-wiki-promote-full-"))
+        try:
+            repo = _setup_promote_local_repo(work_root, fixture_path)
+            try:
+                run_data = _run_promote(
+                    pwsh_path, repo, work_root, dry_run=False,
+                    env_overrides={"LLM_WIKI_GITEA_MOCK_MODE": mock_mode},
+                )
+            except subprocess.TimeoutExpired:
+                all_results.append(TestResult(
+                    label, "promote-full", False,
+                    f"subprocess hung (timeout after {PROMOTE_TIMEOUT_SECONDS}s)",
+                    "completes within timeout", "subprocess hung",
+                ))
+                continue
+            all_results.extend(assert_fn(label, run_data))
+        finally:
+            _cleanup_promote_local_worktrees(work_root)
+            try:
+                shutil.rmtree(work_root, ignore_errors=False)
+            except OSError as exc:
+                print(f"WARNING: cleanup of {work_root} failed: {exc}",
+                      file=sys.stderr)
+
+    return all_results, None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Golden corpus test harness for LLM-Wiki pipeline"
     )
     parser.add_argument(
         "--stage",
-        choices=["parser", "validator", "promote-local", "all"],
+        choices=["parser", "validator", "promote-local", "promote-full", "all"],
         default="all",
         help="Which stage to test (default: all)"
     )
@@ -1937,8 +2401,25 @@ def main():
         else:
             print(f"  Gitea: mocked via LLM_WIKI_GITEA_MOCK_MODE=local_only")
             print(f"  paths exercised: dry-run, live (post-local-git throw), "
-                  f"rerun (branch-exists fail-loudly)")
+                  f"rerun (idempotent recovery via startup reconciliation)")
             all_results.extend(promote_results)
+
+    # --- Promote-full assertions (TD-002 part 2 / Phase 1.9) ---
+    if args.stage in ("promote-full", "all"):
+        print(f"\n--- Promote-full Assertions "
+              f"(end-to-end Promote-ToVerified.ps1 with new mock modes) ---")
+        promote_full_results, skipped_reason = run_promote_full_tests()
+        if skipped_reason is not None:
+            print(f"  SKIPPED: {skipped_reason}")
+            unimplemented_stages.append(
+                "promote-full (skipped: pwsh unavailable)"
+            )
+        else:
+            print(f"  Gitea: mocked via LLM_WIKI_GITEA_MOCK_MODE per path")
+            print(f"  paths exercised: success (pr_success), push-fail "
+                  f"(push_fail), pr-fail (pr_fail), idempotent "
+                  f"(existing_open_pr)")
+            all_results.extend(promote_full_results)
 
     # --- Determine exit code ---
     if not all_results:

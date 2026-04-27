@@ -166,19 +166,115 @@ function Invoke-GiteaApi {
         [object]$Body = $null
     )
 
-    # Test-only mock: skip live HTTP calls when LLM_WIKI_GITEA_MOCK_MODE is set.
-    # Mode "local_only" returns canned "no remote PR / branch not found" shapes
-    # so the local-git promotion path can be exercised end-to-end in CI without
-    # contacting any Gitea instance.  Production runs must NOT set this env var.
-    if ($env:LLM_WIKI_GITEA_MOCK_MODE -eq "local_only") {
+    # Test-only mocks: skip live HTTP calls when LLM_WIKI_GITEA_MOCK_MODE is set.
+    # Production runs must NOT set this env var.  Modes:
+    #   local_only  - no remote PRs, branch not found; exercises post-local-git throw
+    #                 (preserved verbatim from Phase 1.8 - promote-local depends on it)
+    #   pr_success  - branch not found, PR creation succeeds with canned PSCustomObject
+    #                 (used by integration stage and promote-full happy path)
+    #   pr_fail     - branch not found, PR creation returns 422 error
+    #                 (used by promote-full PR-fail-after-push path)
+    #   push_fail   - branch not found, API behaves like pr_success but the
+    #                 push itself fails inside Invoke-GitPushPromotion
+    #                 (used by promote-full push-fail path)
+    $mockMode = $env:LLM_WIKI_GITEA_MOCK_MODE
+    if ($mockMode) {
+        # existing_open_pr mode: simulate "this branch already has an open PR"
+        # for the idempotent-rerun test path.  Branch lookup returns 200 +
+        # branch shape; open-PR list returns 1 entry.
+        if ($mockMode -eq "existing_open_pr") {
+            if ($Method -eq "GET" -and $Endpoint -match "/branches/") {
+                $cannedBranch = [PSCustomObject]@{
+                    name   = "mocked-existing-branch"
+                    commit = [PSCustomObject]@{
+                        id  = "abc1234567890abcdef1234567890abcdef12345"
+                        url = "<mocked>"
+                    }
+                }
+                return @{
+                    StatusCode = 200
+                    Data       = $cannedBranch
+                    Raw        = "<mocked-branch-exists>"
+                    Error      = $false
+                }
+            }
+            if ($Method -eq "GET" -and $Endpoint -match "/pulls\?state=open") {
+                $cannedExistingPr = [PSCustomObject]@{
+                    number   = 1
+                    title    = "auto-promote: existing-pr"
+                    state    = "open"
+                    html_url = "$($GiteaConfig.BaseUrl.TrimEnd('/'))/$($GiteaConfig.RepoOwner)/$($GiteaConfig.RepoName)/pulls/1"
+                    url      = "<mocked>"
+                    head     = [PSCustomObject]@{ ref = "mocked-existing-branch" }
+                    base     = [PSCustomObject]@{ ref = "main" }
+                    merged   = $false
+                }
+                return @{
+                    StatusCode = 200
+                    Data       = @($cannedExistingPr)
+                    Raw        = "<mocked-existing-pr-list>"
+                    Error      = $false
+                }
+            }
+            # Other endpoints fall through to the empty-list default.
+            return @{ StatusCode = 200; Data = @(); Raw = "[]"; Error = $false }
+        }
+
+        # Other modes: branch lookup returns "not found" so the orphan-branch
+        # path is not exercised here.  promote-full's tree-equivalence
+        # tests use a real bare-repo fixture instead (deferred follow-up).
         if ($Method -eq "GET" -and $Endpoint -match "/branches/") {
             return @{
                 StatusCode = 404
                 Data       = $null
-                Raw        = "mock(local_only): branch not found"
+                Raw        = "mock($mockMode): branch not found"
                 Error      = $true
             }
         }
+
+        # PR creation response depends on mode.
+        if ($Method -eq "POST" -and $Endpoint -match "/pulls$") {
+            if ($mockMode -eq "pr_fail") {
+                return @{
+                    StatusCode = 422
+                    Data       = $null
+                    Raw        = "mock(pr_fail): simulated PR creation API error"
+                    Error      = $true
+                }
+            }
+            if ($mockMode -in @("pr_success", "push_fail")) {
+                $headRef = if ($Body) { $Body.head } else { "" }
+                $baseRef = if ($Body) { $Body.base } else { "main" }
+                $cannedPr = [PSCustomObject]@{
+                    number   = 1
+                    title    = if ($Body) { $Body.title } else { "mocked-pr" }
+                    state    = "open"
+                    html_url = "$($GiteaConfig.BaseUrl.TrimEnd('/'))/$($GiteaConfig.RepoOwner)/$($GiteaConfig.RepoName)/pulls/1"
+                    url      = "<mocked>"
+                    head     = [PSCustomObject]@{ ref = $headRef }
+                    base     = [PSCustomObject]@{ ref = $baseRef }
+                }
+                return @{
+                    StatusCode = 201
+                    Data       = $cannedPr
+                    Raw        = "<mocked-pr-response>"
+                    Error      = $false
+                }
+            }
+            # local_only falls through to the empty-list default (post-local-git throw fires before this anyway)
+        }
+
+        # DELETE /branches/<name> - rollback path used by pr_fail flow.
+        if ($Method -eq "DELETE" -and $Endpoint -match "/branches/") {
+            return @{
+                StatusCode = 204
+                Data       = $null
+                Raw        = "mock($mockMode): branch deleted"
+                Error      = $false
+            }
+        }
+
+        # Default for any other call: empty list, success.
         return @{
             StatusCode = 200
             Data       = @()
@@ -255,7 +351,10 @@ function Get-GiteaPullRequests {
         return $result
     }
 
-    if ($HeadBranch -and $result.Data) {
+    # Skip the head-branch filter under any LLM_WIKI_GITEA_MOCK_MODE since
+    # mocks already control what's returned and don't have access to the
+    # dynamically-computed branch alias.  Production runs do not set this env.
+    if ($HeadBranch -and $result.Data -and -not $env:LLM_WIKI_GITEA_MOCK_MODE) {
         $filtered = @($result.Data | Where-Object { $_.head.ref -eq $HeadBranch })
         $result.Data = $filtered
     }
@@ -474,68 +573,114 @@ function Test-RemoteBranchState {
 function Invoke-StartupReconciliation {
     param(
         [hashtable]$GiteaConfig,
-        [string]$StateRoot
+        [string]$StateRoot,
+        [string]$RepoRoot = $null
     )
 
-    $pendingRoot = Join-Path $StateRoot "pending_pr"
-    if (-not (Test-Path -LiteralPath $pendingRoot)) {
-        return @{ Reconciled = 0; Cleaned = 0; Errors = @() }
-    }
-
-    $pendingFiles = @(Get-ChildItem -LiteralPath $pendingRoot -Filter *.json -ErrorAction SilentlyContinue)
     $reconciled = 0
     $cleaned = 0
+    $worktreesRemoved = 0
     $errors = @()
 
-    foreach ($pf in $pendingFiles) {
-        try {
-            $pending = Get-Content -LiteralPath $pf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            $branchAlias = [string]$pending.branch_alias
+    $pendingRoot = Join-Path $StateRoot "pending_pr"
+    if (Test-Path -LiteralPath $pendingRoot) {
+        $pendingFiles = @(Get-ChildItem -LiteralPath $pendingRoot -Filter *.json -ErrorAction SilentlyContinue)
+        foreach ($pf in $pendingFiles) {
+            try {
+                $pending = Get-Content -LiteralPath $pf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+                $branchAlias = [string]$pending.branch_alias
 
-            if (-not $branchAlias) {
-                $errors += "Pending entry missing branch_alias: $($pf.Name)"
-                continue
-            }
-
-            # Check if the PR was merged, closed, or is still open.
-            $openPrs = Get-GiteaPullRequests -GiteaConfig $GiteaConfig -State "open" -HeadBranch $branchAlias
-            $closedPrs = Get-GiteaPullRequests -GiteaConfig $GiteaConfig -State "closed" -HeadBranch $branchAlias
-
-            if ($openPrs.Error -or $closedPrs.Error) {
-                $errors += "Cannot reach Gitea for branch $branchAlias — skipping reconciliation"
-                continue
-            }
-
-            $hasOpenPr = ($openPrs.Data.Count -gt 0)
-            $hasClosedPr = ($closedPrs.Data.Count -gt 0)
-
-            if (-not $hasOpenPr -and -not $hasClosedPr) {
-                # Orphaned pending entry: no PR exists.  Clean up the branch
-                # if it still exists remotely, then remove the pending entry.
-                $branchCheck = Get-GiteaBranch -GiteaConfig $GiteaConfig -BranchName $branchAlias
-                if ($branchCheck.Data -and -not $branchCheck.Error) {
-                    Remove-GiteaBranch -GiteaConfig $GiteaConfig -BranchName $branchAlias
-                    $cleaned++
+                if (-not $branchAlias) {
+                    $errors += "Pending entry missing branch_alias: $($pf.Name)"
+                    continue
                 }
-                Remove-Item -LiteralPath $pf.FullName -Force -ErrorAction SilentlyContinue
-                $reconciled++
+
+                # Check if the PR was merged, closed, or is still open.
+                $openPrs = Get-GiteaPullRequests -GiteaConfig $GiteaConfig -State "open" -HeadBranch $branchAlias
+                $closedPrs = Get-GiteaPullRequests -GiteaConfig $GiteaConfig -State "closed" -HeadBranch $branchAlias
+
+                if ($openPrs.Error -or $closedPrs.Error) {
+                    $errors += "Cannot reach Gitea for branch $branchAlias - skipping reconciliation"
+                    continue
+                }
+
+                # Coerce to array - PowerShell collapses empty arrays in
+                # hashtables to $null, which would crash .Count under StrictMode.
+                $hasOpenPr = (@($openPrs.Data).Count -gt 0)
+                $hasClosedPr = (@($closedPrs.Data).Count -gt 0)
+
+                if (-not $hasOpenPr -and -not $hasClosedPr) {
+                    # Orphaned pending entry: no PR exists.  Clean up the branch
+                    # if it still exists remotely, then remove the pending entry.
+                    $branchCheck = Get-GiteaBranch -GiteaConfig $GiteaConfig -BranchName $branchAlias
+                    if ($branchCheck.Data -and -not $branchCheck.Error) {
+                        Remove-GiteaBranch -GiteaConfig $GiteaConfig -BranchName $branchAlias
+                        $cleaned++
+                    }
+                    Remove-Item -LiteralPath $pf.FullName -Force -ErrorAction SilentlyContinue
+                    $reconciled++
+                }
+                elseif ($hasClosedPr -and -not $hasOpenPr) {
+                    # PR was closed (merged or declined).  Remove pending entry.
+                    Remove-Item -LiteralPath $pf.FullName -Force -ErrorAction SilentlyContinue
+                    $reconciled++
+                }
+                # If the PR is still open, leave the pending entry alone.
             }
-            elseif ($hasClosedPr -and -not $hasOpenPr) {
-                # PR was closed (merged or declined).  Remove pending entry.
-                Remove-Item -LiteralPath $pf.FullName -Force -ErrorAction SilentlyContinue
-                $reconciled++
+            catch {
+                $errors += "Error reconciling $($pf.Name): $($_.Exception.Message)"
             }
-            # If the PR is still open, leave the pending entry alone.
         }
-        catch {
-            $errors += "Error reconciling $($pf.Name): $($_.Exception.Message)"
+    }
+
+    # Worktree-orphan sweep (Phase 1.9, TD-002 part 2 follow-up).
+    # Scan %TEMP% for llm-wiki-promote-* directories whose corresponding remote
+    # branch is gone (push never happened, or branch was deleted as part of a
+    # PR-fail rollback).  Conservative: only clean up worktrees with NO remote
+    # branch.  Worktrees whose remote branch still exists are left alone (they
+    # might be in-use by a concurrent run, or be tracked by an open PR).
+    try {
+        $tempBase = [System.IO.Path]::GetTempPath()
+        $wtPattern = Join-Path $tempBase "llm-wiki-promote-*"
+        $wtDirs = @(Get-ChildItem -Path $wtPattern -Directory -ErrorAction SilentlyContinue)
+        foreach ($wt in $wtDirs) {
+            try {
+                $headRef = (& git -C $wt.FullName rev-parse --abbrev-ref HEAD 2>$null | Out-String).Trim()
+                # Only operate on auto/* branches (our naming convention).
+                # Skip detached HEAD, unparseable, or non-auto branches.
+                if (-not $headRef -or $headRef -eq "HEAD" -or -not $headRef.StartsWith("auto/")) {
+                    continue
+                }
+                $branchCheck = Get-GiteaBranch -GiteaConfig $GiteaConfig -BranchName $headRef
+                # Only clean up when remote branch is confirmed absent (404).
+                # Other errors are inconclusive - leave alone.
+                if ($branchCheck.Error -and $branchCheck.StatusCode -eq 404) {
+                    if ($RepoRoot) {
+                        & git -C $RepoRoot worktree remove --force $wt.FullName 2>&1 | Out-Null
+                        & git -C $RepoRoot branch -D $headRef 2>&1 | Out-Null
+                    }
+                    if (Invoke-RemoveDirectoryWithRetry -Path $wt.FullName) {
+                        $worktreesRemoved++
+                    } else {
+                        $errors += "Could not remove orphan worktree: $($wt.FullName)"
+                    }
+                    if ($RepoRoot) {
+                        & git -C $RepoRoot worktree prune 2>&1 | Out-Null
+                    }
+                }
+            } catch {
+                $errors += "Error inspecting worktree $($wt.Name): $($_.Exception.Message)"
+            }
         }
+    } catch {
+        $errors += "Error enumerating temp worktrees: $($_.Exception.Message)"
     }
 
     return @{
-        Reconciled = $reconciled
-        Cleaned    = $cleaned
-        Errors     = $errors
+        Reconciled       = $reconciled
+        Cleaned          = $cleaned
+        WorktreesRemoved = $worktreesRemoved
+        Errors           = $errors
     }
 }
 
@@ -585,7 +730,9 @@ function Write-PromotionFault {
         [string]$BranchAlias,
         [string]$SourceId,
         [string]$DocumentHash,
-        [string]$Stderr
+        [string]$Stderr,
+        [string]$FaultCategory = "PROMOTION_LOCAL_GIT_FAILED",
+        [hashtable]$Extra = $null
     )
 
     if (-not $LogPath) {
@@ -599,7 +746,7 @@ function Write-PromotionFault {
         $record = [ordered]@{
             timestamp_utc  = (Get-Date).ToUniversalTime().ToString("o")
             event_type     = "operational_fault"
-            fault_category = "PROMOTION_LOCAL_GIT_FAILED"
+            fault_category = $FaultCategory
             fmea_ref       = "F7"
             step           = $Step
             branch_alias   = $BranchAlias
@@ -607,11 +754,50 @@ function Write-PromotionFault {
             document_hash  = $DocumentHash
             stderr         = $Stderr
         }
+        if ($Extra) {
+            foreach ($key in $Extra.Keys) {
+                $record[$key] = $Extra[$key]
+            }
+        }
         $json = $record | ConvertTo-Json -Depth 6 -Compress
         Add-Content -LiteralPath $LogPath -Value $json -Encoding UTF8
     }
     catch {
         # Logging must never crash the rollback path.
+    }
+}
+
+function Write-PromotionInfo {
+    # Positive INFO log line — emits an event for successful or skipped paths
+    # so absence-of-fault produces evidence too (mirrors Phase 1.6 token_method).
+    param(
+        [string]$LogPath,
+        [string]$EventType,
+        [hashtable]$Payload
+    )
+
+    if (-not $LogPath) {
+        return
+    }
+    try {
+        $logDir = Split-Path -Parent $LogPath
+        if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        }
+        $record = [ordered]@{
+            timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
+            event_type    = $EventType
+        }
+        if ($Payload) {
+            foreach ($key in $Payload.Keys) {
+                $record[$key] = $Payload[$key]
+            }
+        }
+        $json = $record | ConvertTo-Json -Depth 6 -Compress
+        Add-Content -LiteralPath $LogPath -Value $json -Encoding UTF8
+    }
+    catch {
+        # Logging must never crash the success path.
     }
 }
 
@@ -713,6 +899,370 @@ function Invoke-LocalGitPromotion {
 }
 
 # ---------------------------------------------------------------------------
+# Git Push Promotion (TD-002 part 2)
+# ---------------------------------------------------------------------------
+# Pushes the committed branch from the local worktree to the remote Gitea.
+# Uses a one-shot token-bearing URL passed directly to git push (not via
+# `git remote add`), so the token never lands in the worktree's .git/config.
+# After push, performs a defensive sweep to verify the token did not leak.
+#
+# On failure: emits PROMOTION_PUSH_FAILED to JSONL, attempts cleanup of the
+# worktree and any local branch we created, then re-throws with a sanitized
+# message.  Run-Validator.ps1's catch block emits the standard F7
+# promotion_gated_pending_remote_wiring fault on top of that.
+
+function Invoke-RemoveDirectoryWithRetry {
+    # Windows file-handle race mitigation (Phase 1.8 known issue): git child
+    # processes occasionally still hold packfile handles when we try to remove
+    # a worktree.  Retry up to 3 times with 200ms backoff.
+    param(
+        [string]$Path,
+        [int]$MaxAttempts = 3,
+        [int]$DelayMs = 200
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $true
+    }
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return $true
+        }
+        catch {
+            if ($attempt -eq $MaxAttempts) {
+                return $false
+            }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+    return $false
+}
+
+function Get-GiteaPushUrl {
+    # Builds a token-bearing URL for one-shot git push.  Returns both the
+    # actual URL (containing the token) and a redacted variant for any place
+    # the URL might end up in logs or error output.
+    param([hashtable]$GiteaConfig)
+
+    $baseUrl = $GiteaConfig.BaseUrl.TrimEnd('/')
+    if ($baseUrl -match '^(https?)://(.+)$') {
+        $protocol = $matches[1]
+        $hostPath = $matches[2]
+    } else {
+        throw "Get-GiteaPushUrl: GITEA_URL must start with http:// or https:// (got '$baseUrl')"
+    }
+
+    $owner = $GiteaConfig.RepoOwner
+    $repo  = $GiteaConfig.RepoName
+    $token = $GiteaConfig.Token
+
+    return @{
+        ActualUrl   = "${protocol}://oauth2:${token}@${hostPath}/${owner}/${repo}.git"
+        RedactedUrl = "${protocol}://oauth2:<token>@${hostPath}/${owner}/${repo}.git"
+    }
+}
+
+function Test-WorktreeTokenLeak {
+    # Defensive sweep: scans the worktree's .git/config for the token after
+    # any operation that involved a token-bearing URL.  Returns $true if the
+    # token leaked into config (which would be a bug).  We never `git remote
+    # add` the URL, so this should always return $false; the sweep is
+    # belt-and-suspenders.
+    param(
+        [string]$WorktreePath,
+        [string]$Token
+    )
+
+    if (-not $Token) {
+        return $false
+    }
+    $configPath = Join-Path $WorktreePath ".git/config"
+    if (-not (Test-Path -LiteralPath $configPath)) {
+        # Worktrees use gitdir pointer files, not full .git directories.
+        $gitDirFile = Join-Path $WorktreePath ".git"
+        if (Test-Path -LiteralPath $gitDirFile -PathType Leaf) {
+            $gitDirContent = Get-Content -LiteralPath $gitDirFile -Raw -Encoding UTF8
+            if ($gitDirContent -match '^gitdir:\s*(.+)$') {
+                $resolvedGitDir = $matches[1].Trim()
+                $configPath = Join-Path $resolvedGitDir "config"
+                if (-not (Test-Path -LiteralPath $configPath)) {
+                    return $false
+                }
+            } else {
+                return $false
+            }
+        } else {
+            return $false
+        }
+    }
+
+    $configContent = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
+    if (-not $configContent) {
+        return $false
+    }
+    return $configContent.Contains($Token)
+}
+
+function Invoke-GitPushPromotion {
+    param(
+        [string]$WorktreePath,
+        [string]$BranchAlias,
+        [hashtable]$GiteaConfig,
+        [string]$RepoRoot,
+        [string]$LogPath,
+        [string]$SourceId,
+        [string]$DocumentHash
+    )
+
+    $token = $GiteaConfig.Token
+    $mockMode = $env:LLM_WIKI_GITEA_MOCK_MODE
+    # Defensive init for the URL vars - the catch block references $redactedUrl,
+    # so under Set-StrictMode -Version Latest an undefined value would throw
+    # before the fault could be logged.
+    $pushUrl = $null
+    $redactedUrl = "<not-set>"
+
+    try {
+        # Test-only mock branches.  Production runs do not set LLM_WIKI_GITEA_MOCK_MODE.
+        if ($mockMode -eq "push_fail") {
+            throw "Simulated push failure (LLM_WIKI_GITEA_MOCK_MODE=push_fail)"
+        }
+        if ($mockMode -in @("pr_success", "pr_fail")) {
+            # Skip the actual push - no real remote in test environments.
+            $mockedSha = (& git -C $WorktreePath rev-parse HEAD 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $mockedSha) {
+                throw "git rev-parse HEAD failed in worktree (exit ${LASTEXITCODE})"
+            }
+            Write-PromotionInfo -LogPath $LogPath -EventType "promotion_push_completed" -Payload @{
+                branch_alias  = $BranchAlias
+                pushed_sha    = $mockedSha
+                source_id     = $SourceId
+                document_hash = $DocumentHash
+                push_target   = "<mocked>"
+                mocked        = $true
+                mock_mode     = $mockMode
+            }
+            return @{
+                Success      = $true
+                PushedSha    = $mockedSha
+                PushedBranch = $BranchAlias
+            }
+        }
+
+        # Real push path.
+        $urlPair = Get-GiteaPushUrl -GiteaConfig $GiteaConfig
+        $pushUrl = $urlPair.ActualUrl
+        $redactedUrl = $urlPair.RedactedUrl
+
+        # Push the branch using the one-shot URL.  The URL is passed directly
+        # to git push as a command-line arg; we never `git remote add` it.
+        $pushOutput = & git -C $WorktreePath push $pushUrl $BranchAlias 2>&1
+        $pushExit = $LASTEXITCODE
+        # Sanitize output before any handling - the token must never reach a log.
+        $rawOutput = ($pushOutput | Out-String)
+        $sanitizedOutput = if ($token) { $rawOutput.Replace($token, '<token>') } else { $rawOutput }
+
+        if ($pushExit -ne 0) {
+            throw "git push failed (exit ${pushExit}): $sanitizedOutput"
+        }
+
+        # Resolve the pushed commit SHA from the worktree's HEAD.
+        $pushedSha = (& git -C $WorktreePath rev-parse HEAD 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $pushedSha) {
+            throw "git rev-parse HEAD failed in worktree (exit ${LASTEXITCODE})"
+        }
+
+        # Defensive token-leak sweep - belt-and-suspenders.
+        if (Test-WorktreeTokenLeak -WorktreePath $WorktreePath -Token $token) {
+            throw "DEFENSE: token leaked into worktree's .git/config after push. This indicates an upstream bug in git or in the URL-building helper. Aborting before any further side effects."
+        }
+
+        # Positive INFO log line for evidence symmetry.
+        Write-PromotionInfo -LogPath $LogPath -EventType "promotion_push_completed" -Payload @{
+            branch_alias    = $BranchAlias
+            pushed_sha      = $pushedSha
+            source_id       = $SourceId
+            document_hash   = $DocumentHash
+            push_target     = $redactedUrl
+        }
+
+        # Null out the token-bearing URL before returning.
+        $pushUrl = $null
+
+        return @{
+            Success      = $true
+            PushedSha    = $pushedSha
+            PushedBranch = $BranchAlias
+        }
+    }
+    catch {
+        $errMessage = $_.Exception.Message
+        # Final sanitization barrier - if the token snuck into the message,
+        # redact it before logging or throwing.
+        $sanitized = if ($token) { $errMessage.Replace($token, '<token>') } else { $errMessage }
+
+        # Best-effort rollback: remove worktree and local branch.
+        $worktreeRemoved = $false
+        try {
+            & git -C $RepoRoot worktree remove --force $WorktreePath 2>&1 | Out-Null
+            $worktreeRemoved = $true
+        } catch { }
+        if (-not $worktreeRemoved -or (Test-Path -LiteralPath $WorktreePath)) {
+            Invoke-RemoveDirectoryWithRetry -Path $WorktreePath | Out-Null
+        }
+        try {
+            & git -C $RepoRoot branch -D $BranchAlias 2>&1 | Out-Null
+        } catch { }
+
+        # Null out the token-bearing URL before logging the fault.
+        $pushUrl = $null
+
+        Write-PromotionFault -LogPath $LogPath -Step "git_push_promotion" `
+            -BranchAlias $BranchAlias -SourceId $SourceId -DocumentHash $DocumentHash `
+            -Stderr $sanitized -FaultCategory "PROMOTION_PUSH_FAILED" `
+            -Extra @{ push_target = $redactedUrl }
+
+        throw "Invoke-GitPushPromotion failed: $sanitized"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Tree-SHA Equivalence Check (P0-8) — TD-002 part 2
+# ---------------------------------------------------------------------------
+# Compares the remote branch's tree and parent SHAs against the local commit
+# from Invoke-LocalGitPromotion.  Equivalence = trees identical AND parents
+# identical (interpretation 1 of P0-8: same tree, same base).
+#
+# Implementation: Option B (git fetch + rev-parse).  Uses git's own object
+# model for SHA computation — no reimplementation of git blob hashing in
+# PowerShell.  Fetches the remote branch into a unique temp ref under
+# refs/llm-wiki/tree-compare-<guid>, computes tree SHAs and parent SHAs,
+# then deletes the temp ref in finally.
+#
+# Returns @{ Equivalent=bool; Error=bool; Message=str; LocalTreeSha=str;
+# RemoteTreeSha=str; LocalParentSha=str; RemoteParentSha=str; TreesMatch=bool;
+# ParentsMatch=bool }.  Fail-closed on any error (Equivalent=$false).
+
+function Test-RemoteTreeEquivalence {
+    param(
+        [hashtable]$GiteaConfig,
+        [string]$BranchAlias,
+        [string]$RepoRoot,
+        [string]$LocalCommitSha,
+        [string]$LogPath,
+        [string]$SourceId,
+        [string]$DocumentHash
+    )
+
+    $tempRefName = "refs/llm-wiki/tree-compare-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 12)
+    $token = $GiteaConfig.Token
+    $urlPair = Get-GiteaPushUrl -GiteaConfig $GiteaConfig
+    $fetchUrl = $urlPair.ActualUrl
+    $redactedUrl = $urlPair.RedactedUrl
+
+    $result = @{
+        Equivalent       = $false
+        Error            = $true
+        Message          = $null
+        LocalTreeSha     = $null
+        RemoteTreeSha    = $null
+        LocalParentSha   = $null
+        RemoteParentSha  = $null
+        TreesMatch       = $false
+        ParentsMatch     = $false
+    }
+
+    try {
+        # Fetch the remote branch into a unique temp ref.  The token-bearing
+        # URL is passed directly to git fetch as an arg; we never persist it.
+        $fetchOutput = & git -C $RepoRoot fetch $fetchUrl "${BranchAlias}:${tempRefName}" 2>&1
+        $fetchExit = $LASTEXITCODE
+        $rawFetchOutput = ($fetchOutput | Out-String)
+        $sanitizedFetchOutput = if ($token) { $rawFetchOutput.Replace($token, '<token>') } else { $rawFetchOutput }
+
+        if ($fetchExit -ne 0) {
+            $result.Message = "git fetch failed (exit ${fetchExit}): $sanitizedFetchOutput"
+            return $result
+        }
+
+        # Resolve local + remote tree SHAs and parent SHAs.
+        $localTreeSha = (& git -C $RepoRoot rev-parse "${LocalCommitSha}^{tree}" 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            $result.Message = "Cannot resolve local commit tree: $localTreeSha"
+            return $result
+        }
+
+        $remoteTreeSha = (& git -C $RepoRoot rev-parse "${tempRefName}^{tree}" 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            $result.Message = "Cannot resolve remote tree: $remoteTreeSha"
+            return $result
+        }
+
+        $localParentSha = (& git -C $RepoRoot rev-parse "${LocalCommitSha}^" 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            $result.Message = "Cannot resolve local commit parent: $localParentSha"
+            return $result
+        }
+
+        $remoteParentSha = (& git -C $RepoRoot rev-parse "${tempRefName}^" 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            $result.Message = "Cannot resolve remote commit parent: $remoteParentSha"
+            return $result
+        }
+
+        $treesMatch   = ($localTreeSha   -eq $remoteTreeSha)
+        $parentsMatch = ($localParentSha -eq $remoteParentSha)
+        $equivalent   = $treesMatch -and $parentsMatch
+
+        $result.Equivalent      = $equivalent
+        $result.Error           = $false
+        $result.LocalTreeSha    = $localTreeSha
+        $result.RemoteTreeSha   = $remoteTreeSha
+        $result.LocalParentSha  = $localParentSha
+        $result.RemoteParentSha = $remoteParentSha
+        $result.TreesMatch      = $treesMatch
+        $result.ParentsMatch    = $parentsMatch
+
+        $outcome = if ($equivalent) { "equivalent" } else { "not_equivalent_failed_closed" }
+        Write-PromotionInfo -LogPath $LogPath -EventType "tree_sha_check" -Payload @{
+            branch_alias       = $BranchAlias
+            source_id          = $SourceId
+            document_hash      = $DocumentHash
+            local_commit_sha   = $LocalCommitSha
+            local_tree_sha     = $localTreeSha
+            local_parent_sha   = $localParentSha
+            remote_tree_sha    = $remoteTreeSha
+            remote_parent_sha  = $remoteParentSha
+            trees_match        = $treesMatch
+            parents_match      = $parentsMatch
+            equivalent         = $equivalent
+            outcome            = $outcome
+            fetch_target       = $redactedUrl
+        }
+
+        return $result
+    }
+    finally {
+        # Always clean up the temp ref.
+        & git -C $RepoRoot update-ref -d $tempRefName 2>&1 | Out-Null
+
+        # Defensive token-leak sweep on RepoRoot's .git/config.
+        $repoRootGitConfig = Join-Path $RepoRoot ".git/config"
+        if (Test-Path -LiteralPath $repoRootGitConfig) {
+            $configContent = Get-Content -LiteralPath $repoRootGitConfig -Raw -Encoding UTF8
+            if ($configContent -and $token -and $configContent.Contains($token)) {
+                throw "DEFENSE: token leaked into RepoRoot's .git/config after fetch. This indicates a git or URL-builder bug. Aborting."
+            }
+        }
+
+        # Null out the URL.
+        $fetchUrl = $null
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Ledger Root (shared with Run-Validator.ps1 via convention)
 # ---------------------------------------------------------------------------
 $LedgerRoot = Join-Path $StateRoot "ledger"
@@ -770,6 +1320,8 @@ $preview = [ordered]@{
     declined_pr_rule           = "state=closed AND merged=false routes to declined_by_human and blocks re-promotion until hash or digest changes"
     local_commit_sha           = $null
     worktree_path              = $null
+    pr_number                  = $null
+    pr_url                     = $null
     generated_utc              = (Get-Date).ToUniversalTime().ToString("o")
 }
 
@@ -810,17 +1362,18 @@ $giteaConfig = $giteaEnv.Config
 # ---------------------------------------------------------------------------
 # Step 0: Startup Reconciliation (Preflight Cleanup)
 # ---------------------------------------------------------------------------
-# Clean orphaned pending_pr entries and stale remote branches before
-# attempting any new promotion.  This is idempotent and safe to run
-# on every invocation.
+# Clean orphaned pending_pr entries, stale remote branches, and orphan
+# worktrees from %TEMP% before attempting any new promotion.  Idempotent
+# and safe to run on every invocation.
 #
-# STATUS: This handles preflight state cleanup only.  Full workspace
-# rollback for live promotion side effects (e.g., reverting a partial
-# git push) is not yet implemented because the live push path is still
-# gated behind OQ-2.  When the OQ-2 gate is removed, this function
-# will need to be extended to handle rollback of incomplete pushes
-# and partial PR creation.
-$startupResult = Invoke-StartupReconciliation -GiteaConfig $giteaConfig -StateRoot $StateRoot
+# Phase 1.9 / 03b extended this with the worktree-orphan sweep: any
+# %TEMP%\llm-wiki-promote-* directory whose corresponding remote branch
+# is gone (404) is cleaned up.  Worktrees with surviving remote branches
+# are left alone (might be in-use or be tracked by an open PR).
+$startupResult = Invoke-StartupReconciliation -GiteaConfig $giteaConfig -StateRoot $StateRoot -RepoRoot $RepoRoot
+if ($startupResult.WorktreesRemoved -gt 0) {
+    Write-Host "Startup reconciliation removed $($startupResult.WorktreesRemoved) orphan worktree(s) from %TEMP%."
+}
 if ($startupResult.Errors.Count -gt 0) {
     Write-Warning "Startup reconciliation encountered non-fatal errors:"
     foreach ($err in $startupResult.Errors) {
@@ -892,12 +1445,13 @@ Audit preview: $auditFile
 }
 
 # ---------------------------------------------------------------------------
-# Step 2: Remote Branch State Check (Fail-Closed)
+# Step 2: Remote Branch State Check (existence only)
 # ---------------------------------------------------------------------------
-# Check whether the remote branch already exists.  Full tree-SHA equivalence
-# (P0-8) is not yet implemented — see Test-RemoteBranchState comments.
-# Current behavior: any existing remote branch blocks promotion unless an
-# open PR already exists for it.
+# Test-RemoteBranchState answers "does the remote branch exist?"  When it
+# does AND has an open PR, we short-circuit (idempotent re-run).  When it
+# exists with NO open PR, that's an orphan from a prior interrupted run -
+# we defer the tree-SHA equivalence decision to Step 4 (after local-git
+# produces a commit we can compare against).
 $treeCheck = Test-RemoteBranchState -GiteaConfig $giteaConfig -BranchAlias $branchAlias -LocalTreeFingerprint $treeFingerprint
 
 if ($treeCheck.Error) {
@@ -910,31 +1464,24 @@ Audit preview: $auditFile
 "@
 }
 
+$orphanBranchDeferredCheck = $false
 if ($treeCheck.Exists) {
     # Branch exists remotely.  Check for an existing open PR.
     $existingPrs = Get-GiteaPullRequests -GiteaConfig $giteaConfig -State "open" -HeadBranch $branchAlias
-    if (-not $existingPrs.Error -and $existingPrs.Data.Count -gt 0) {
+    if (-not $existingPrs.Error -and (@($existingPrs.Data).Count -gt 0)) {
         $existingPr = $existingPrs.Data[0]
-        Write-Host "Existing open PR #$($existingPr.number) found for branch $branchAlias. Skipping duplicate creation."
+        Write-Host "Existing open PR #$($existingPr.number) found for branch $branchAlias. Skipping duplicate creation (idempotent re-run path)."
 
         # Ensure we have a pending_pr entry for tracking.
         Write-PendingPrEntry -StateRoot $StateRoot -BranchAlias $branchAlias -SourceId $sourceId -DocumentHash $documentHash -PrNumber $existingPr.number | Out-Null
         exit 0
     }
 
-    # Branch exists but no open PR — this is an orphaned branch.
-    # The tree equivalence check is fail-closed: we cannot confirm the
-    # remote tree matches local intent without a full tree comparison.
-    # Hard-fail per P0-8.
-    throw @"
-Promote-ToVerified.ps1: Remote branch $branchAlias exists but has no open PR and tree equivalence cannot be confirmed.
-
-$($treeCheck.Note)
-
-Fail-closed per P0-8: remote branch accepted only when base SHA and tree SHA match local intent.
-Manual investigation required.  Delete the remote branch or use -Force to override.
-Audit preview: $auditFile
-"@
+    # Branch exists but no open PR - orphan from a prior interrupted run.
+    # Defer the tree-SHA equivalence check to Step 4 (after local-git
+    # produces a commit to compare against via Option B / git fetch + rev-parse).
+    Write-Host "Remote branch $branchAlias exists with no open PR. Tree-SHA equivalence check deferred to post-local-git step (P0-8 recovery path)."
+    $orphanBranchDeferredCheck = $true
 }
 
 # ---------------------------------------------------------------------------
@@ -961,34 +1508,225 @@ $preview['worktree_path']    = $localGitResult.WorktreePath
 Set-Content -LiteralPath $auditFile -Value ($preview | ConvertTo-Json -Depth 8) -Encoding UTF8
 
 # ---------------------------------------------------------------------------
-# Step 4: Push + PR creation (TD-002 part 2 - not yet wired)
+# Test-only boundary guard: LLM_WIKI_GITEA_MOCK_MODE=local_only
 # ---------------------------------------------------------------------------
-# OQ-2 RESOLVED (Phase 1.5).  Branch protection verified on the configured
-# external Gitea instance: enable_push=false, required_approvals=1,
-# enable_force_push=false.
-#
-# Local git operations are now wired (Phase 1.8 / TD-002 part 1).  Engineering
-# Prompt 03b will: push the branch from the worktree, create the PR via the
-# Gitea API, write the pending_pr entry, and remove the worktree.  Until then
-# the gate stays fail-closed via the throw below.
-
-$shortCommit = $localGitResult.CommitSha.Substring(0, 8)
-throw @"
+# When LLM_WIKI_GITEA_MOCK_MODE=local_only is set, throw post-local-git with
+# the Phase 1.8-compatible gating message.  This preserves the promote-local
+# stage contract (exercise local-git only; do not touch push or PR creation)
+# now that 03b has wired the post-local-git steps.
+# Production runs do NOT set LLM_WIKI_GITEA_MOCK_MODE.
+if ($env:LLM_WIKI_GITEA_MOCK_MODE -eq "local_only") {
+    $shortLG = $localGitResult.CommitSha.Substring(0, 8)
+    throw @"
 promotion_gated_pending_remote_wiring
 
-Local git promotion complete (branch=$branchAlias, commit=$shortCommit, worktree=$($localGitResult.WorktreePath)); push not yet wired (TD-002 part 2).
+[local_only mock] Local git promotion complete (branch=$branchAlias, commit=$shortLG, worktree=$($localGitResult.WorktreePath)); push deliberately not exercised under LLM_WIKI_GITEA_MOCK_MODE=local_only.
 
-All preflight checks passed:
-  - Gitea credentials:      configured ($($giteaConfig.BaseUrl))
-  - Startup reconciliation: $($startupResult.Reconciled) entries reconciled, $($startupResult.Cleaned) branches cleaned
-  - Declined-PR check:      clear
-  - Remote branch check:    branch does not exist (clean slate)
-  - Local git promotion:    succeeded (commit $shortCommit on $branchAlias)
-
-Remaining before activation:
-  1. Push the worktree branch to the remote (TD-002 part 2)
-  2. Create the PR via Gitea API (TD-002 part 2)
-  3. Implement tree-SHA equivalence check (P0-8)
+This mock mode bounds the test surface to local-git only.  Production runs do not set LLM_WIKI_GITEA_MOCK_MODE; full push + PR creation runs in those.
 
 Audit preview: $auditFile
+
+(TD-002 part 2 push path is wired and active when this mock is unset.)
 "@
+}
+
+# ---------------------------------------------------------------------------
+# Step 4: Tree-SHA Equivalence Check (orphan-branch recovery, P0-8)
+# ---------------------------------------------------------------------------
+# When Step 2 detected an orphan branch (exists, no open PR), verify its
+# tree state is byte-equivalent to what we just committed locally.  Option B:
+# git fetch the remote branch into a temp ref and compare tree + parent SHAs.
+#   Equivalent => skip push (already there), proceed to PR creation.
+#   Not equivalent or check error => rollback worktree+branch, fail closed.
+
+$skipPush = $false
+if ($orphanBranchDeferredCheck) {
+    $eqCheck = Test-RemoteTreeEquivalence `
+        -GiteaConfig $giteaConfig `
+        -BranchAlias $branchAlias `
+        -RepoRoot $RepoRoot `
+        -LocalCommitSha $localGitResult.CommitSha `
+        -LogPath $LogPath `
+        -SourceId $sourceId `
+        -DocumentHash $documentHash
+
+    if ($eqCheck.Error) {
+        & git -C $RepoRoot worktree remove --force $localGitResult.WorktreePath 2>&1 | Out-Null
+        Invoke-RemoveDirectoryWithRetry -Path $localGitResult.WorktreePath | Out-Null
+        & git -C $RepoRoot branch -D $branchAlias 2>&1 | Out-Null
+
+        throw @"
+Promote-ToVerified.ps1: Tree-SHA equivalence check could not run for branch $branchAlias.
+
+$($eqCheck.Message)
+
+Fail-closed per P0-8: cannot confirm remote tree state.
+Audit preview: $auditFile
+"@
+    }
+
+    if (-not $eqCheck.Equivalent) {
+        & git -C $RepoRoot worktree remove --force $localGitResult.WorktreePath 2>&1 | Out-Null
+        Invoke-RemoveDirectoryWithRetry -Path $localGitResult.WorktreePath | Out-Null
+        & git -C $RepoRoot branch -D $branchAlias 2>&1 | Out-Null
+
+        $treesMatch = $eqCheck.TreesMatch
+        $parentsMatch = $eqCheck.ParentsMatch
+        throw @"
+Promote-ToVerified.ps1: Remote branch $branchAlias exists with non-equivalent tree state.
+
+Local tree SHA:    $($eqCheck.LocalTreeSha)
+Remote tree SHA:   $($eqCheck.RemoteTreeSha)
+Trees match:       $treesMatch
+Local parent SHA:  $($eqCheck.LocalParentSha)
+Remote parent SHA: $($eqCheck.RemoteParentSha)
+Parents match:     $parentsMatch
+
+Fail-closed per P0-8: remote branch accepted only when base SHA and tree SHA match local intent.
+Manual investigation required.  Delete the remote branch or use -Force to override.
+Audit preview: $auditFile
+"@
+    }
+
+    Write-Host "Remote branch $branchAlias is tree-equivalent to local intent (recovery from prior interrupted run). Skipping push; proceeding to PR creation."
+    $skipPush = $true
+}
+
+# ---------------------------------------------------------------------------
+# Step 5: Push (skipped on orphan-recovery / equivalent-tree path)
+# ---------------------------------------------------------------------------
+
+if (-not $skipPush) {
+    # Invoke-GitPushPromotion handles its own rollback (worktree + branch)
+    # and emits PROMOTION_PUSH_FAILED on failure; throw propagates here.
+    $pushResult = Invoke-GitPushPromotion `
+        -WorktreePath $localGitResult.WorktreePath `
+        -BranchAlias $branchAlias `
+        -GiteaConfig $giteaConfig `
+        -RepoRoot $RepoRoot `
+        -LogPath $LogPath `
+        -SourceId $sourceId `
+        -DocumentHash $documentHash
+}
+
+# ---------------------------------------------------------------------------
+# Step 6: PR Creation
+# ---------------------------------------------------------------------------
+# After this point a remote branch exists with our intent.  PR creation is
+# the next operation; on failure we MUST delete the remote branch (orphan
+# would block re-promotion via the Step-2 existence check) and roll back
+# the local worktree+branch.
+
+$shortCommit = $localGitResult.CommitSha.Substring(0, 8)
+$prTitle = "auto-promote: $sourceId ($shortCommit)"
+$prBody = @"
+Auto-promotion from LLM-Wiki content pipeline.
+
+source_id:               $sourceId
+document_hash:           $documentHash
+branch_alias:            $branchAlias
+local_commit_sha:        $($localGitResult.CommitSha)
+local_tree_fingerprint:  $treeFingerprint
+context_digest:          $contextDigest
+generated_utc:           $((Get-Date).ToUniversalTime().ToString("o"))
+"@
+
+$prResult = New-GiteaPullRequest -GiteaConfig $giteaConfig -Title $prTitle -HeadBranch $branchAlias -BodyText $prBody
+
+if ($prResult.Error) {
+    # Critical: branch is on remote (push or skip-push reuse), PR creation failed.
+    # Per the rollback decision tree: delete the remote branch FIRST (an orphan
+    # would block re-promotion), then best-effort local cleanup, then fault.
+    $branchDeleteError = $null
+    try {
+        $deleteResult = Remove-GiteaBranch -GiteaConfig $giteaConfig -BranchName $branchAlias
+        if ($deleteResult.Error) {
+            $branchDeleteError = $deleteResult.Raw
+        }
+    } catch {
+        $branchDeleteError = $_.Exception.Message
+    }
+
+    & git -C $RepoRoot worktree remove --force $localGitResult.WorktreePath 2>&1 | Out-Null
+    Invoke-RemoveDirectoryWithRetry -Path $localGitResult.WorktreePath | Out-Null
+    & git -C $RepoRoot branch -D $branchAlias 2>&1 | Out-Null
+
+    $prFaultExtra = @{ pr_create_status = $prResult.StatusCode }
+    if ($branchDeleteError) {
+        $prFaultExtra.branch_cleanup_error = $branchDeleteError
+    }
+    Write-PromotionFault -LogPath $LogPath -Step "pr_creation" `
+        -BranchAlias $branchAlias -SourceId $sourceId -DocumentHash $documentHash `
+        -Stderr $prResult.Raw -FaultCategory "PROMOTION_PR_FAILED" `
+        -Extra $prFaultExtra
+
+    $cleanupNote = if ($branchDeleteError) { "FAILED ($branchDeleteError)" } else { "succeeded" }
+    throw @"
+Promote-ToVerified.ps1: PR creation failed for branch $branchAlias.
+
+PR API status: $($prResult.StatusCode)
+PR API error:  $($prResult.Raw)
+Remote branch cleanup: $cleanupNote
+Audit preview: $auditFile
+"@
+}
+
+$prNumber = $prResult.Data.number
+$prUrl = $null
+if ($prResult.Data.PSObject.Properties.Name -contains 'html_url') {
+    $prUrl = $prResult.Data.html_url
+}
+if (-not $prUrl -and ($prResult.Data.PSObject.Properties.Name -contains 'url')) {
+    $prUrl = $prResult.Data.url
+}
+
+# ---------------------------------------------------------------------------
+# Step 7: Pending PR Tracking + Audit Update + Success Event
+# ---------------------------------------------------------------------------
+# After this point the PR exists on Gitea (durable).  Failures here are
+# logged but do not roll back the PR (per the decision tree: forward, not
+# back, once the PR is durable).
+
+try {
+    Write-PendingPrEntry -StateRoot $StateRoot -BranchAlias $branchAlias `
+        -SourceId $sourceId -DocumentHash $documentHash -PrNumber $prNumber | Out-Null
+} catch {
+    Write-PromotionFault -LogPath $LogPath -Step "pending_pr_write" `
+        -BranchAlias $branchAlias -SourceId $sourceId -DocumentHash $documentHash `
+        -Stderr $_.Exception.Message -FaultCategory "PENDING_PR_WRITE_FAILED"
+    Write-Warning "Pending PR write failed but PR #$prNumber is durable on Gitea. Startup reconciliation will repopulate state."
+}
+
+try {
+    $preview['pr_number'] = $prNumber
+    $preview['pr_url']    = $prUrl
+    Set-Content -LiteralPath $auditFile -Value ($preview | ConvertTo-Json -Depth 8) -Encoding UTF8
+} catch {
+    Write-PromotionFault -LogPath $LogPath -Step "audit_rewrite" `
+        -BranchAlias $branchAlias -SourceId $sourceId -DocumentHash $documentHash `
+        -Stderr $_.Exception.Message -FaultCategory "AUDIT_REWRITE_FAILED"
+    Write-Warning "Audit rewrite failed but PR #$prNumber is durable on Gitea."
+}
+
+$treeShaCheckOutcome = if ($skipPush) { "equivalent" } else { "skipped" }
+Write-PromotionInfo -LogPath $LogPath -EventType "promotion_completed" -Payload @{
+    branch_alias     = $branchAlias
+    source_id        = $sourceId
+    document_hash    = $documentHash
+    commit_sha       = $localGitResult.CommitSha
+    pr_number        = $prNumber
+    pr_url           = $prUrl
+    pushed_to_remote = (-not $skipPush)
+    tree_sha_check   = $treeShaCheckOutcome
+}
+
+# Best-effort worktree cleanup on success.
+& git -C $RepoRoot worktree remove --force $localGitResult.WorktreePath 2>&1 | Out-Null
+Invoke-RemoveDirectoryWithRetry -Path $localGitResult.WorktreePath | Out-Null
+
+Write-Host "Promotion complete: PR #$prNumber created for branch $branchAlias (commit $shortCommit)."
+if ($prUrl) {
+    Write-Host "PR URL: $prUrl"
+}
+Write-Host "Audit:  $auditFile"
+exit 0

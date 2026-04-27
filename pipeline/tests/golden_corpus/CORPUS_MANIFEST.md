@@ -115,9 +115,24 @@ Exercises `Promote-ToVerified.ps1` directly (not via `Run-Validator.ps1`) to ver
 |------|--------------|
 | dry-run | `-DryRun` produces audit preview with new `local_commit_sha`/`worktree_path` keys (null in dry-run); no JSONL faults |
 | live (mocked Gitea) | Worktree created in `%TEMP%\llm-wiki-promote-<guid>`, article copied, commit on `auto/<source>/<8-hex>`, post-local-git throw fires with `promotion_gated_pending_remote_wiring` |
-| rerun | Branch already exists → fail-loudly path → `PROMOTION_LOCAL_GIT_FAILED` JSONL fault with `step=branch_already_exists`, no new worktree created |
+| rerun (idempotent recovery) | Phase 1.9: orphan worktree from the prior run is auto-cleaned by `Invoke-StartupReconciliation`, then a fresh local-git promotion runs and throws again at the `local_only` post-local-git boundary. (Pre-Phase-1.9 contract was "fail loudly with branch already exists.") |
 
-Live Gitea calls are mocked via `LLM_WIKI_GITEA_MOCK_MODE=local_only` (test-only env var; `Invoke-GiteaApi` returns canned "no remote PR / branch not found" responses). Implemented as the `promote-local` stage in `run_harness.py` (Phase 1.8). 32 assertions; runs on `python run_harness.py --stage all` and `--stage promote-local`. Requires pwsh; skipped with explicit reason if pwsh is missing.
+Live Gitea calls are mocked via `LLM_WIKI_GITEA_MOCK_MODE=local_only` (test-only env var; `Invoke-GiteaApi` returns canned "no remote PR / branch not found" responses). Implemented as the `promote-local` stage in `run_harness.py`. 31 assertions; runs on `python run_harness.py --stage all` and `--stage promote-local`. Requires pwsh; skipped with explicit reason if pwsh is missing.
+
+## Promote-full Tests (TD-002 part 2)
+
+Exercises the FULL `Promote-ToVerified.ps1` flow under the new mock modes introduced in Phase 1.9 / 03b. Each path uses a fresh temp repo (via `_setup_promote_local_repo`), a unique `LLM_WIKI_GITEA_MOCK_MODE` setting, and asserts on structured JSONL events (no string-substring couplings beyond a few diagnostic message checks).
+
+| Path | Mock Mode | What It Tests |
+|------|-----------|--------------|
+| success | `pr_success` | Full happy flow: local-git → push (mocked-skipped) → PR creation (canned success) → pending_pr write → audit rewrite → `promotion_completed` JSONL with all 5 structured fields. Audit file populated with `pr_number=1` and a non-empty `pr_url`. No `operational_fault` events emitted. |
+| push-fail | `push_fail` | Synthetic push failure inside `Invoke-GitPushPromotion`. Verifies rollback: worktree + local branch removed, `PROMOTION_PUSH_FAILED` JSONL fault emitted with `step=git_push_promotion`, no `promotion_completed` event. |
+| pr-fail-after-push | `pr_fail` | PR creation API returns 422 after push success. Verifies rollback: `Remove-GiteaBranch` called (mock returns 204), worktree + local branch removed, `PROMOTION_PR_FAILED` JSONL fault emitted with `step=pr_creation`. `promotion_push_completed` event present (push fired before PR fail); no `promotion_completed` event. |
+| idempotent | `existing_open_pr` | Branch + open PR both exist on remote (mocked). Verifies the Step-2 short-circuit: exit 0, "Existing open PR #1 found ... idempotent re-run path" message, no new push, no new PR creation, no `promotion_completed` event, no faults. |
+
+Tree-equivalence paths (orphan-branch recovery: tree-match, tree-mismatch) are deferred to a future phase — they need a bare-repo fixture (real `git fetch` against a local file:// remote) to exercise the production `Test-RemoteTreeEquivalence` function. The real `git push` path is exercised by the live throwaway-Gitea smoke test (Phase 1.9 ledger entry), not by an automated test stage.
+
+Implemented as the `promote-full` stage in `run_harness.py`. 30 assertions; runs on `python run_harness.py --stage all` and `--stage promote-full`. Requires pwsh.
 
 
 ## Coverage Summary
