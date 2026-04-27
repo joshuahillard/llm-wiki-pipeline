@@ -105,7 +105,7 @@
 
 | ID | File | What It Tests | Procedure |
 |----|------|--------------|-----------|
-| CTX-001 | `integration/CTX-001-digest-change-test.md` | Context digest invalidation (P0-2, F2). Same article evaluated twice with a config change between runs. | See `integration/CTX-001-README.md` |
+| CTX-001 | `integration/CTX-001-digest-change-test.md` | End-to-end orchestration: parse -> validate -> ledger write -> audit -> F7 promotion gate. Exercises approve / reject / escalate paths via `LLM_WIKI_STUB_DECISION` env override, plus a determinism check (approve repeated). Implemented as the `integration` stage in `run_harness.py` (Phase 1.7). | Automated — runs on `python run_harness.py --stage all`. Requires pwsh (PowerShell 7+) on PATH; stage is skipped with explicit reason if pwsh is missing. The `integration/CTX-001-README.md` is preserved as a Phase 0.6 historical artifact; its digest-rotation premise is moot under current code (no caching layer to invalidate, ledger writes are append-only via timestamped filenames). |
 
 
 ## Coverage Summary

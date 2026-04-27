@@ -123,11 +123,50 @@ def default_provider(payload, config):
 
 
 def _stub_response():
-    """Fallback stub — returns a minimal approve. Only for smoke tests."""
+    """Fallback stub - returns a minimal canned response. Only for smoke tests.
+
+    Decision defaults to "approve" but can be overridden via the
+    LLM_WIKI_STUB_DECISION env var (one of "approve", "reject", "escalate")
+    so end-to-end orchestration tests can exercise reject/escalate paths
+    without a live provider. Unknown values fall back to "approve".
+    """
+    decision = os.environ.get("LLM_WIKI_STUB_DECISION", "approve").lower()
+    if decision == "reject":
+        return json.dumps({
+            "decision": "reject",
+            "confidence": 0.9,
+            "reasoning": "Stub reject response - no LLM call was made.",
+            "policy_violations": [
+                {
+                    "rule_id": "ACCURACY-001",
+                    "description": "Stub-injected violation for orchestration testing.",
+                    "severity": "critical",
+                },
+            ],
+            "recommendations": [
+                "Connect a real LLM provider for actual evaluation.",
+            ],
+        })
+    if decision == "escalate":
+        return json.dumps({
+            "decision": "escalate",
+            "confidence": 0.6,
+            "reasoning": "Stub escalate response - no LLM call was made.",
+            "policy_violations": [
+                {
+                    "rule_id": "NEUTRALITY-001",
+                    "description": "Stub-injected escalation signal for orchestration testing.",
+                    "severity": "minor",
+                },
+            ],
+            "recommendations": [
+                "Connect a real LLM provider for actual evaluation.",
+            ],
+        })
     return json.dumps({
         "decision": "approve",
         "confidence": 0.5,
-        "reasoning": "Stub response — no LLM call was made.",
+        "reasoning": "Stub response - no LLM call was made.",
         "policy_violations": [],
         "recommendations": [
             "Connect a real LLM provider for actual evaluation.",

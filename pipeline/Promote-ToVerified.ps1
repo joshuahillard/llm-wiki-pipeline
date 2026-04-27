@@ -4,6 +4,8 @@ param(
     [string]$ArticlePath,
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$StateRoot = "C:\llm-wiki-state",
+    [string]$ProvisionalRoot = $null,
+    [string]$VerifiedRoot = $null,
     [string]$ContextDigest = $null,
     [switch]$DryRun,
     [switch]$Force
@@ -13,8 +15,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $PipelineRoot = $PSScriptRoot
-$ProvisionalRoot = Join-Path $PipelineRoot "provisional"
-$VerifiedRoot = Join-Path $PipelineRoot "verified"
+if (-not $ProvisionalRoot) {
+    $ProvisionalRoot = Join-Path $PipelineRoot "provisional"
+}
+if (-not $VerifiedRoot) {
+    $VerifiedRoot = Join-Path $PipelineRoot "verified"
+}
 $ParserPath = Join-Path $PipelineRoot "parse_identity.py"
 $AuditRoot = Join-Path $StateRoot "audit"
 $PythonExe = "python"

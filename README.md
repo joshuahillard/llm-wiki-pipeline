@@ -6,14 +6,14 @@ The pipeline takes draft articles in `pipeline/provisional/`, evaluates them aga
 
 ## Status
 
-**Current phase:** Phase 1.6 (per `PROJECT_LEDGER.md`, last updated April 26, 2026)
+**Current phase:** Phase 1.7 (per `PROJECT_LEDGER.md`, last updated April 26, 2026)
 
 | Area | State |
 |------|-------|
 | Parser harness | 59 / 59 assertions passing |
 | Validator harness | 225 / 225 assertions passing |
-| Combined (deduplicated) | 244 / 244 passing, 0 failing |
-| Integration test stage | **Intentionally unimplemented** — exit code 3 from `--stage all` reflects partial coverage, not a failure |
+| Integration harness | 76 / 76 assertions passing (approve / reject / escalate decision paths + determinism check) |
+| Combined `--stage all` | 320 / 320 passing, 0 failing, **exit 0** |
 | Golden corpus fixtures | 50 (52% adversarial ratio) |
 | LLM provider | Anthropic Claude Sonnet 4.6 — wired in `pipeline/validator_runner.py`, **smoke-tested live in Phase 1.6** (decision=`approve`, confidence `0.91`, ~8.2s end-to-end) |
 | Promotion path | Scaffolded with Gitea client, declined-PR reconciliation, and branch-existence check; **gated behind a hard fail until git-push wiring lands (TD-002)** |
@@ -75,7 +75,7 @@ At runtime, the pipeline expects external state at `C:\llm-wiki-state\` (Windows
 Requirements:
 
 - **Python 3.10+** (the Anthropic SDK and `jsonschema` require modern Python)
-- **PowerShell 5.1+ or PowerShell Core 7+** (for `Run-Validator.ps1` and `Promote-ToVerified.ps1`)
+- **PowerShell 7+ (`pwsh`)** is required for the integration stage of the test harness. `Run-Validator.ps1` and `Promote-ToVerified.ps1` themselves now also parse cleanly under Windows PowerShell 5.1 (em-dashes were replaced with ASCII hyphens in Phase 1.7), but the integration stage hard-requires `pwsh` and skips with an explicit reason if it is unavailable.
 - An **Anthropic API key** in `ANTHROPIC_API_KEY` (only required to use the live provider; the test harness uses a deterministic stub)
 
 Install Python dependencies:
@@ -92,7 +92,7 @@ pip install "anthropic>=0.40" "jsonschema>=4.0" "pyyaml>=6.0"
 
 ## Test
 
-The golden corpus harness verifies parser and validator behavior against 50 fixtures across `approve` / `reject` / `escalate` / `adversarial` categories.
+The golden corpus harness verifies parser, validator, and orchestration behavior against 50 fixtures across `approve` / `reject` / `escalate` / `adversarial` / `integration` categories.
 
 Run the parser stage (frontmatter parsing only, 59 assertions):
 
@@ -106,13 +106,15 @@ Run the validator stage (full evaluation against deterministic stub responses, 2
 python pipeline/tests/run_harness.py --stage validator
 ```
 
-Run all stages (deduplicated combined run, 244 assertions):
+Run all stages (parser + validator + integration, 320 assertions):
 
 ```bash
 python pipeline/tests/run_harness.py --stage all
 ```
 
-Expected output for `--stage all`: **`244 passed, 0 failed`** with **exit code 3**. Exit 3 is intentional — it signals that the integration stage is not yet implemented, not that any test has failed. The parser and validator stages both exit 0.
+Expected output for `--stage all`: **`320 passed, 0 failed`** with **exit code 0**. The integration stage exercises the full orchestration end-to-end — parse, validate, ledger write, audit, and the F7 promotion gate — across approve / reject / escalate decision paths plus a determinism re-run, using the deterministic stub provider with decisions controlled by the `LLM_WIKI_STUB_DECISION` env var.
+
+The integration stage hard-requires `pwsh` (PowerShell 7+) on the PATH. If `pwsh` is missing, the stage is skipped with an explicit reason and the harness exits 3 (partial coverage) rather than failing. `powershell.exe` (5.1) is intentionally not used as a fallback even if available.
 
 ## Run the validator (live provider)
 
@@ -143,8 +145,7 @@ Some artifacts referenced in the project ledger are working material maintained 
 ## Roadmap (next engineering steps)
 
 1. **Wire the git-push + workspace-rollback path** in `Promote-ToVerified.ps1` to close the remaining TD-002 gap.
-2. **Implement the integration test stage** so `--stage all` can exit 0.
-3. **Surface `article_token_count` in ledger entries** — the count is computed during budget check in `validator_runner.py` (exact, via Anthropic `count_tokens`) but is not currently threaded back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
-4. **Make `Run-Validator.ps1` parse-clean on Windows PowerShell 5.1** — replace four em-dashes (lines 86, 92, 278, 337) with ASCII hyphens, or save the file with UTF-8 BOM. The script currently requires `pwsh` (PowerShell 7+) on Windows. Phase 1.6 follow-up.
-5. **README and portfolio doc audit** to fully close TD-004.
-6. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).
+2. **Surface `article_token_count` in ledger entries** — the count is computed during budget check in `validator_runner.py` (exact, via Anthropic `count_tokens`) but is not currently threaded back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
+3. **Emit a positive `INFO: token_method=...` log line on every run** so future smoke tests have explicit evidence of the live tokenizer path rather than inferring success from the absence of a fallback warning. Phase 1.6 follow-up.
+4. **README and portfolio doc audit** to fully close TD-004.
+5. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).

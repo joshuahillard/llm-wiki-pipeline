@@ -2,6 +2,8 @@
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$StateRoot = "C:\llm-wiki-state",
+    [string]$ProvisionalRoot = $null,
+    [string]$VerifiedRoot = $null,
     [switch]$DryRun
 )
 
@@ -17,7 +19,12 @@ $SchemaPath = Join-Path $PipelineRoot "validation_result.schema.json"
 $SystemPromptPath = Join-Path $PipelineRoot "SYSTEM_PROMPT.md"
 $PolicyBundlePath = Join-Path $PipelineRoot "policy_engine\_policy_bundle.md"
 $PromoteScriptPath = Join-Path $PipelineRoot "Promote-ToVerified.ps1"
-$ProvisionalRoot = Join-Path $PipelineRoot "provisional"
+if (-not $ProvisionalRoot) {
+    $ProvisionalRoot = Join-Path $PipelineRoot "provisional"
+}
+if (-not $VerifiedRoot) {
+    $VerifiedRoot = Join-Path $PipelineRoot "verified"
+}
 $LogRoot = Join-Path $StateRoot "logs"
 $LedgerRoot = Join-Path $StateRoot "ledger"
 $AuditRoot = Join-Path $StateRoot "audit"
@@ -83,13 +90,13 @@ function Get-EffectiveValidatorConfigObject {
     $provider = [string]$config.provider
     if ($provider -eq "anthropic") {
         if (-not $env:ANTHROPIC_API_KEY) {
-            Write-Warning "ANTHROPIC_API_KEY not set — falling back to stub provider."
+            Write-Warning "ANTHROPIC_API_KEY not set - falling back to stub provider."
             $config.provider = "stub"
         }
     }
     elseif ($provider -eq "vertex_ai") {
         # Vertex AI integration is not yet wired in validator_runner.py.
-        Write-Warning "vertex_ai provider not yet implemented — falling back to stub provider."
+        Write-Warning "vertex_ai provider not yet implemented - falling back to stub provider."
         $config.provider = "stub"
     }
     # stub and any other value pass through to validator_runner.py, which
@@ -217,7 +224,7 @@ function Invoke-JsonPython {
 function New-FeedbackSidecar {
     param(
         [string]$ArticlePath,
-        [hashtable]$ValidationResult
+        [object]$ValidationResult
     )
 
     $sidecarPath = $ArticlePath + ".feedback.md"
@@ -275,7 +282,7 @@ function Test-DeclinedHashLock {
             $entry = Get-Content -LiteralPath $lf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
         }
         catch {
-            # Skip unreadable ledger files — the lock check is a guardrail,
+            # Skip unreadable ledger files - the lock check is a guardrail,
             # not a load-bearing wall.  A corrupted file must not kill the run.
             continue
         }
@@ -334,7 +341,7 @@ foreach ($file in $files) {
     $documentHash = Get-FileSha256 -Path $file.FullName
 
     # Governance Invariant 6: declined hash-lock check.
-    # Applies unconditionally — DryRun must not bypass the lock.
+    # Applies unconditionally - DryRun must not bypass the lock.
     $lockResult = Test-DeclinedHashLock -DocumentHash $documentHash -ContextDigest $contextDigest
     if ($lockResult.Locked) {
         Write-JsonlEvent -EventType "evaluation_skipped" -Payload @{
@@ -477,7 +484,7 @@ foreach ($file in $files) {
         # regardless of promotion outcome.
         if ($decision -eq "approve") {
             try {
-                & $PromoteScriptPath -ArticlePath $file.FullName -RepoRoot $RepoRoot -StateRoot $StateRoot -ContextDigest $contextDigest
+                & $PromoteScriptPath -ArticlePath $file.FullName -RepoRoot $RepoRoot -StateRoot $StateRoot -ProvisionalRoot $ProvisionalRoot -VerifiedRoot $VerifiedRoot -ContextDigest $contextDigest
             }
             catch {
                 $summary.faults++
