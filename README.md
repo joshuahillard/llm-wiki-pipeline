@@ -146,10 +146,30 @@ Some artifacts referenced in the project ledger are working material maintained 
 
 ## Roadmap (next engineering steps)
 
-1. **Bare-repo fixture for `promote-full` tree-equivalence paths** — `Test-RemoteTreeEquivalence` is in production (Phase 1.9) but the tree-match and tree-mismatch paths in `promote-full` were deferred. They need a bare-repo "remote" set up locally so the real `git fetch` runs against a controlled state. Recommended next phase.
-2. **Live orphan-recovery smoke test** — Phase 1.9 covered clean-publish and idempotent-rerun scenarios. The orphan-recovery path (delete PR + leave branch + re-run + verify `Test-RemoteTreeEquivalence` fires correctly against real Gitea) was not exercised live. Manual one-off using the same throwaway-repo flow.
-3. **CI-time mock-vs-real shape parity assertion** — `pipeline/tests/fixtures/gitea_pr_response_shape.json` documents the expected real-response field set; an optional CI step could load it and verify a configured throwaway Gitea returns the consumer-required subset. Phase 1.9 captured this manually.
-4. **Surface `article_token_count` in ledger entries** — the count is computed during budget check in `validator_runner.py` (exact, via Anthropic `count_tokens`) but is not currently threaded back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
-5. **Emit a positive `INFO: token_method=...` log line on every run** so future smoke tests have explicit evidence of the live tokenizer path rather than inferring success from the absence of a fallback warning. Phase 1.6 follow-up.
-6. **README and portfolio doc audit** to fully close TD-004.
-7. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).
+The remaining work is grouped into three small follow-up phases, sequenced by risk-to-leave-undone. The intent is to keep technical debt minimal: each phase closes a specific gap surfaced by the Phase 1.9 Limitations review or carried forward from earlier phases.
+
+### Phase 2.0 — Tree-equivalence test coverage (HIGH priority; medium effort)
+
+**Why now:** `Test-RemoteTreeEquivalence` is in production from Phase 1.9 but has zero automated test coverage. A regression could ship green and only surface in the rare orphan-recovery scenario; this is the highest-risk untested code path in the pipeline.
+
+1. **Bare-repo fixture for `promote-full`** — set up a local `file://` remote in a temp dir so the real `git fetch` runs against controlled tree state.
+2. **Add `tree_match` and `tree_mismatch` paths to the `promote-full` stage** — exercise the recovery branch (skip push, create PR) and the fail-closed branch (rollback worktree, throw with P0-8 violation) of `Test-RemoteTreeEquivalence`.
+3. **Live orphan-recovery smoke test** — manual one-off against a throwaway Gitea repo: delete an existing PR, leave the branch, re-run the pipeline, verify the equivalence check fires correctly and either recovers or fails closed as expected. Same throwaway-repo flow used in Phase 1.9.
+
+### Phase 2.1 — CI safety nets + tokenizer evidence (MEDIUM priority; small effort)
+
+**Why now:** All three add observability without changing pipeline behavior. They make latent issues (Gitea API drift, tokenizer-method ambiguity) visible at CI time instead of in production.
+
+4. **CI-time mock-vs-real parity assertion** — load `pipeline/tests/fixtures/gitea_pr_response_shape.json` and (when configured) query a throwaway Gitea to verify the consumer-required subset is still present. Catches Gitea API breaking changes before they hit production.
+5. **`article_token_count` threading into ledger entries** — the count is computed exactly in `validator_runner.py` via Anthropic `count_tokens` but is not currently passed back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
+6. **Positive `INFO: token_method=...` log line on every run** — currently the live-tokenizer path's success is inferred from the absence of a fallback warning. A positive log line provides direct evidence symmetry. Phase 1.6 follow-up.
+
+### Phase 2.2 — Documentation alignment / TD-004 (LOW priority; small-medium effort)
+
+**Why last:** Closes the final tracked tech debt item. Best done after the prior phases land any doc-shape changes (test counts, file locations, function names) so the audit happens against a stable target.
+
+7. **README + portfolio doc audit** across all entry points (README, Foundations/, Governance/, Program-Management/, Strategy Kit) to fully close TD-004.
+
+### Long-tail (tracked separately, not in any specific phase)
+
+- No LICENSE/CI/dependency manifest historically; `requirements.txt` was added at the public-push milestone (Phase 1.5).
