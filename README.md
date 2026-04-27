@@ -6,7 +6,7 @@ The pipeline takes draft articles in `pipeline/provisional/`, evaluates them aga
 
 ## Status
 
-**Current phase:** Phase 1.5 (per `PROJECT_LEDGER.md`, last updated April 9, 2026)
+**Current phase:** Phase 1.6 (per `PROJECT_LEDGER.md`, last updated April 26, 2026)
 
 | Area | State |
 |------|-------|
@@ -15,7 +15,7 @@ The pipeline takes draft articles in `pipeline/provisional/`, evaluates them aga
 | Combined (deduplicated) | 244 / 244 passing, 0 failing |
 | Integration test stage | **Intentionally unimplemented** — exit code 3 from `--stage all` reflects partial coverage, not a failure |
 | Golden corpus fixtures | 50 (52% adversarial ratio) |
-| LLM provider | Anthropic Claude Sonnet 4.6 — wired in `pipeline/validator_runner.py`, **not yet smoke-tested against a real article** |
+| LLM provider | Anthropic Claude Sonnet 4.6 — wired in `pipeline/validator_runner.py`, **smoke-tested live in Phase 1.6** (decision=`approve`, confidence `0.91`, ~8.2s end-to-end) |
 | Promotion path | Scaffolded with Gitea client, declined-PR reconciliation, and branch-existence check; **gated behind a hard fail until git-push wiring lands (TD-002)** |
 
 ### Technical Debt Register (summary)
@@ -142,8 +142,9 @@ Some artifacts referenced in the project ledger are working material maintained 
 
 ## Roadmap (next engineering steps)
 
-1. **Smoke-test the live Anthropic provider** against a real article and capture the result in the ledger.
-2. **Wire the git-push + workspace-rollback path** in `Promote-ToVerified.ps1` to close the remaining TD-002 gap.
-3. **Implement the integration test stage** so `--stage all` can exit 0.
-4. **README and portfolio doc audit** to fully close TD-004.
-5. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).
+1. **Wire the git-push + workspace-rollback path** in `Promote-ToVerified.ps1` to close the remaining TD-002 gap.
+2. **Implement the integration test stage** so `--stage all` can exit 0.
+3. **Surface `article_token_count` in ledger entries** — the count is computed during budget check in `validator_runner.py` (exact, via Anthropic `count_tokens`) but is not currently threaded back to the PowerShell orchestration layer for ledger inclusion. Phase 1.6 follow-up.
+4. **Make `Run-Validator.ps1` parse-clean on Windows PowerShell 5.1** — replace four em-dashes (lines 86, 92, 278, 337) with ASCII hyphens, or save the file with UTF-8 BOM. The script currently requires `pwsh` (PowerShell 7+) on Windows. Phase 1.6 follow-up.
+5. **README and portfolio doc audit** to fully close TD-004.
+6. Long-tail items tracked separately (no LICENSE/CI/dependency manifest historically — `requirements.txt` added at the public-push milestone).

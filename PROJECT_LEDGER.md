@@ -286,6 +286,37 @@
 **Test count:** 244/244 assertions passing (`--stage all`). Parser harness 59/59, validator harness 225/225. Integration stage (CTX-001) remains intentionally unimplemented. Harness exit code 3.
 **Status:** Calibration rebalance complete. All named gaps closed. Next steps: smoke-test live Anthropic provider path, then TD-002 (Gitea promotion).
 
+### Phase 1.6 — Live Provider Smoke Test (April 26, 2026)
+
+**What happened:** First end-to-end live API call through the production validator path. Staged a clean Kubernetes networking fixture (sourced from `pipeline/tests/golden_corpus/approve/A-001-clean-article.md`) into `pipeline/provisional/A-001-smoke-test.md` with a unique `source_id` (`A-001-smoke-2026-04-26`), then ran `Run-Validator.ps1` against the live Anthropic Claude Sonnet 4.6 endpoint with `provider: "anthropic"` from the production `validator_config.json`. The validator returned a schema-valid `approve` decision (confidence `0.91`), wrote a ledger entry to `C:\llm-wiki-state\ledger\`, and emitted four JSONL events (`run_started`, `operational_fault` from the F7 promotion gate, `evaluation_completed`, `run_completed`). End-to-end wall-clock latency was 8.16 seconds for one article including count_tokens preflight, Messages API call, ledger write, and the gated promotion attempt.
+
+**Why this matters:** TD-001 was closed in Phase 1.5 with the live Anthropic provider wired and a model-specific tokenizer in place, but the path had never been exercised against a real article. This smoke test confirms the SDK integration works end-to-end, the schema validation gate passes on real model output, and the ledger captures a faithful, schema-valid record. It also produces the first live-provider audit baseline that future regression tests and DPO preference pairs can reference.
+
+**Artifacts:**
+- Ledger entry `f3f321a6cc17…_20260427T011133…Z.json` under `C:\llm-wiki-state\ledger\` (3,364 bytes; runtime audit history, not committed)
+- JSONL events appended to `C:\llm-wiki-state\logs\pipeline.log`: `run_started`, `operational_fault` (F7), `evaluation_completed`, `run_completed`
+- `pipeline/provisional/A-001-smoke-test.md` — transient, deleted post-run per smoke-test cleanup; not committed
+- `README.md` — Roadmap item 1 marked complete; Phase 1.6 follow-up items added; status table updated
+- `PROJECT_LEDGER.md` — this entry; cumulative metrics updated
+
+**Key findings:**
+- The live model returned a clean approve with substantive reasoning (factual accuracy, structural completeness, no security/PII concerns) and three actionable recommendations (CNI plugin tradeoffs, link to upstream Kubernetes networking docs, suggestion to cover Ingress / Gateway API). Confidence `0.91` aligns with a clean approve under a conservative reviewer policy.
+- The model correctly followed the SYSTEM_PROMPT contract for clean approvals: `policy_violations: []` even though the `reasoning` text mentions a NEUTRALITY-001 observation. Info-level observations were folded into `recommendations` rather than the structured array, consistent with the policy bundle (NEUTRALITY-001 is `info` severity, observational only). This is the intended calibration behavior, and matches how the deterministic stub responses are shaped in the golden corpus.
+- `article_token_count` in the ledger entry is `null`. The token count is computed during `check_token_budget()` inside `validator_runner.py` via `count_tokens_for_provider()`, which dispatches to `count_tokens_anthropic` (Anthropic Messages API `count_tokens` endpoint) when provider=anthropic with the API key present, and falls back to byte estimate otherwise. No fallback warning was emitted in stderr during this run, so the live-tokenizer path is **inferred** to have succeeded — but the method choice is not directly logged on success, only on fallback. Recommended follow-ups: (a) thread the count back from the validator to the orchestration layer for ledger inclusion, (b) emit a single positive `INFO: token_method=... input_tokens=...` line on every run so future smoke tests have explicit evidence rather than inferring from the absence of a warning.
+- Encountered a real portability gap during the smoke test: `Run-Validator.ps1` contains four em-dash characters (`—`, U+2014) in comments and warning strings, and is saved as UTF-8 without BOM. Windows PowerShell 5.1 reads scripts as Windows-1252 by default, which mis-parses these em-dashes and breaks the `Get-EffectiveValidatorConfigObject` function with `MissingEndCurlyBrace`. PowerShell 7+ (`pwsh`) handles UTF-8 natively and parses cleanly. The smoke test was completed via `pwsh`. Recommended follow-up: replace em-dashes with ASCII hyphens or save the script with UTF-8 BOM so PS5.1 also parses correctly.
+- The F7 promotion gate fired as expected (TD-002 fail-closed), confirming the gate placement after ledger write preserves the audit trail even when downstream promotion is unavailable. The decision is durably recorded in the ledger; the promotion attempt is a separate concern, logged as `promotion_gated_pending_remote_wiring` with `fmea_ref: F7`. The promotion preview audit file (`C:\llm-wiki-state\audit\promotion-preview-c9269825ecdb.json`, 745 bytes) was confirmed on disk after the run, demonstrating that the fail-closed branch in `Promote-ToVerified.ps1` still produces durable audit evidence even when the live PR path is unavailable.
+- The `model_config_snapshot` in the ledger faithfully captures the runtime config (`provider: anthropic`, `model_id: claude-sonnet-4-6`, `temperature: 0.0`, matching `system_instruction_hash`), and the `context_digest` (`954ea34e…`) reflects the live-provider config — confirming the Phase 0.8 integrity fix where the effective config used at runtime is also the config reflected in the digest.
+
+**Limitations of this smoke test:**
+- Only the **approve happy path** was exercised. Reject, escalate, token-overflow, and transient API-error paths remain untested live; they continue to be covered only by the deterministic stub harness.
+- **Determinism at `temperature: 0.0` was not verified.** A repeat call with the same input was not made; the smoke test produces one observation, not a determinism check.
+- **Wall-clock latency (8.16 s) is end-to-end for the entire script**, including parser invocation, the `count_tokens` preflight network call, the Messages API call, schema validation, ledger write, and the failed promotion attempt. It is not a clean Anthropic round-trip number; per-stage timing is not currently captured.
+- **The token-count method is inferred, not logged** on success (see ledger surface follow-up above).
+- The smoke-test article was placed in `pipeline/provisional/`, which is **not gitignored** at the article level — only manual cleanup before staging prevented the transient article from entering git history. Recommended follow-up: add a `*-smoke-test*.md` ignore pattern under `pipeline/provisional/`, or stage smoke runs to a gitignored `pipeline/.smoke/` location, so future smoke tests are safe against accidental commits.
+
+**Test count:** 244/244 assertions passing (`--stage all`) — parser harness 59/59, validator harness 225/225. Verified before and after the live run. Integration stage remains intentionally unimplemented (exit 3).
+**Status:** README Roadmap item 1 closed. Phase 1.6 produced the first live-provider audit baseline. New observations surfaced for follow-up: (a) `article_token_count` ledger surface gap, (b) `Run-Validator.ps1` em-dash portability gap on PS5.1.
+
 ---
 
 ## Decision Log
@@ -323,7 +354,7 @@
 | **Tests passing** | 0 | 244/244 (59 parser + 225 validator; 244 deduplicated via `--stage all`) |
 | **Source files** | 0 (design only) | 12 core runtime/test artifacts (parser, schemas/helpers, harness, production validator, runtime bootstrap, prompt, policy bundle) |
 | **Pipeline components** | 0 / 4 | 4 / 4 artifacts present (parser complete; production validator with live Anthropic provider; orchestration with credential-aware fallback; promotion preflight present) |
-| **Live provider** | — | Anthropic Claude Sonnet 4.6 (wired, not yet smoke-tested) |
+| **Live provider** | — | Anthropic Claude Sonnet 4.6 (smoke-tested Phase 1.6: decision=`approve`, confidence `0.91`, ~8.2s end-to-end) |
 | **Golden corpus fixtures** | 0 | 50 (11A/7R/5E/26Adv/1Int) — all 15 violation rule IDs exercised; 52.0% adversarial ratio |
 | **Testing deserts** | — | 0 at rule-ID level; remaining work is depth-building per rule |
 | **Specification artifacts** | 0 | 13 (6 strategy specs + 7 contract wiki pages) |
@@ -344,4 +375,4 @@
 ---
 
 *Ledger maintained by: Josh Hillard*
-*Last updated: April 9, 2026 (Phase 1.5 — OQ-2 Resolution, Gitea Integration Partial, TD-001 Closed)*
+*Last updated: April 26, 2026 (Phase 1.6 — Live Provider Smoke Test)*
