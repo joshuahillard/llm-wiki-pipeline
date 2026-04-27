@@ -174,3 +174,10 @@ handoff.skill
 # Degraded binary duplicates of canonical Markdown
 # -----------------------------------------------------------------------------
 strategy/LLM-Wiki_Strategy_Kit.docx
+
+# -----------------------------------------------------------------------------
+# Local engineering prompts (operational hand-offs for new chat sessions —
+# kept local; promote individual prompts to public docs only when sanitized
+# and useful as project documentation)
+# -----------------------------------------------------------------------------
+engineering-prompts/
