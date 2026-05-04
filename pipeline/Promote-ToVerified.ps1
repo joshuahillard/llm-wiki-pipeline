@@ -220,9 +220,42 @@ function Invoke-GiteaApi {
             return @{ StatusCode = 200; Data = @(); Raw = "[]"; Error = $false }
         }
 
+        # tree_match / tree_mismatch modes: simulate an "orphan branch" state
+        # (branch exists remotely AND no open PR for it).  The script's main
+        # flow then defers to Test-RemoteTreeEquivalence (Step 4 / P0-8), which
+        # runs a REAL git fetch against the bare-repo fixture configured by
+        # promote-full's _setup_bare_repo_for_tree_path helper.  The mock just
+        # needs to gate the orphan path open; it does NOT influence the tree
+        # comparison itself, which uses git's own object model.
+        if ($mockMode -in @("tree_match", "tree_mismatch")) {
+            if ($Method -eq "GET" -and $Endpoint -match "/branches/") {
+                $cannedBranch = [PSCustomObject]@{
+                    name   = "mocked-orphan-branch"
+                    commit = [PSCustomObject]@{
+                        id  = "0000000000000000000000000000000000000000"
+                        url = "<mocked>"
+                    }
+                }
+                return @{
+                    StatusCode = 200
+                    Data       = $cannedBranch
+                    Raw        = "<mocked-orphan-branch>"
+                    Error      = $false
+                }
+            }
+            if ($Method -eq "GET" -and $Endpoint -match "/pulls\?state=open") {
+                # Empty list -> no idempotent short-circuit -> orphan path triggers.
+                return @{
+                    StatusCode = 200
+                    Data       = @()
+                    Raw        = "[]"
+                    Error      = $false
+                }
+            }
+        }
+
         # Other modes: branch lookup returns "not found" so the orphan-branch
-        # path is not exercised here.  promote-full's tree-equivalence
-        # tests use a real bare-repo fixture instead (deferred follow-up).
+        # path is not exercised here.
         if ($Method -eq "GET" -and $Endpoint -match "/branches/") {
             return @{
                 StatusCode = 404
@@ -242,7 +275,7 @@ function Invoke-GiteaApi {
                     Error      = $true
                 }
             }
-            if ($mockMode -in @("pr_success", "push_fail")) {
+            if ($mockMode -in @("pr_success", "push_fail", "tree_match", "tree_mismatch")) {
                 $headRef = if ($Body) { $Body.head } else { "" }
                 $baseRef = if ($Body) { $Body.base } else { "main" }
                 $cannedPr = [PSCustomObject]@{
@@ -950,18 +983,25 @@ function Get-GiteaPushUrl {
     if ($baseUrl -match '^(https?)://(.+)$') {
         $protocol = $matches[1]
         $hostPath = $matches[2]
-    } else {
-        throw "Get-GiteaPushUrl: GITEA_URL must start with http:// or https:// (got '$baseUrl')"
-    }
+        $owner = $GiteaConfig.RepoOwner
+        $repo  = $GiteaConfig.RepoName
+        $token = $GiteaConfig.Token
 
-    $owner = $GiteaConfig.RepoOwner
-    $repo  = $GiteaConfig.RepoName
-    $token = $GiteaConfig.Token
-
-    return @{
-        ActualUrl   = "${protocol}://oauth2:${token}@${hostPath}/${owner}/${repo}.git"
-        RedactedUrl = "${protocol}://oauth2:<token>@${hostPath}/${owner}/${repo}.git"
+        return @{
+            ActualUrl   = "${protocol}://oauth2:${token}@${hostPath}/${owner}/${repo}.git"
+            RedactedUrl = "${protocol}://oauth2:<token>@${hostPath}/${owner}/${repo}.git"
+        }
     }
+    if ($baseUrl -match '^file://') {
+        # Test-only: file:// remote (used by promote-full tree-equivalence
+        # bare-repo fixture).  No token rewrite -- file paths don't carry
+        # credentials.  Production runs use http(s); this branch never fires.
+        return @{
+            ActualUrl   = $baseUrl
+            RedactedUrl = $baseUrl
+        }
+    }
+    throw "Get-GiteaPushUrl: GITEA_URL must start with http://, https://, or file:// (got '$baseUrl')"
 }
 
 function Test-WorktreeTokenLeak {

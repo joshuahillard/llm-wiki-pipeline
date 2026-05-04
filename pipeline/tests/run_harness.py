@@ -1601,6 +1601,208 @@ def _cleanup_promote_local_worktrees(work_root):
         pass
 
 
+_PS_ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*m')
+_PS_EXCEPTION_WRAP = re.compile(r'\n\s*\|\s*')
+
+
+def _normalize_ps_text(text):
+    """Strip ANSI escape codes and PowerShell exception-formatter line wraps.
+
+    PowerShell decorates `throw` messages with ANSI colors and wraps long
+    lines with `     | ` prefixes for terminal display.  Both survive
+    capture-output and break naive substring matches on multi-word phrases
+    that happen to land on a wrap boundary.  Normalize once, search after.
+    """
+    if not text:
+        return ""
+    text = _PS_ANSI_ESCAPE.sub('', text)
+    text = _PS_EXCEPTION_WRAP.sub(' ', text)
+    return text
+
+
+def _find_warmup_worktree(work_root):
+    """Locate the worktree created by Invoke-LocalGitPromotion's local_only run.
+
+    Returns (worktree_path, branch_alias) or raises RuntimeError.
+
+    Robust against PowerShell's ANSI-decorated stderr-wrapped throw messages:
+    we read git's own state via `worktree list --porcelain` rather than
+    parsing the script's output text.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(work_root), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"tree-path warmup: `git worktree list` failed in {work_root}: "
+            f"{result.stderr[:300]!r}"
+        )
+
+    work_root_resolved = Path(str(work_root)).resolve()
+    worktree_path = None
+    for line in (result.stdout or "").splitlines():
+        if not line.startswith("worktree "):
+            continue
+        candidate = line[len("worktree "):].strip()
+        # Skip the main work_root itself (resolved equality handles slash
+        # variations + drive-letter case differences on Windows).
+        try:
+            if Path(candidate).resolve() == work_root_resolved:
+                continue
+        except (OSError, ValueError):
+            continue
+        base = Path(candidate).name
+        # The script names its worktree llm-wiki-promote-<guid>; the test's
+        # outer dir uses llm-wiki-promote-full-<random>.  Match the former,
+        # exclude the latter.
+        if base.startswith("llm-wiki-promote-") and "-full-" not in base:
+            worktree_path = candidate
+            break
+
+    if worktree_path is None:
+        raise RuntimeError(
+            f"tree-path warmup: no auxiliary worktree found under {work_root}; "
+            f"`git worktree list` output: {result.stdout[:600]!r}"
+        )
+
+    br = subprocess.run(
+        ["git", "-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if br.returncode != 0:
+        raise RuntimeError(
+            f"tree-path warmup: could not read branch from worktree "
+            f"{worktree_path}: {br.stderr[:300]!r}"
+        )
+    branch_alias = (br.stdout or "").strip()
+    if not branch_alias.startswith("auto/"):
+        raise RuntimeError(
+            f"tree-path warmup: unexpected branch alias {branch_alias!r} "
+            f"in worktree {worktree_path}"
+        )
+    return worktree_path, branch_alias
+
+
+def _setup_bare_repo_for_tree_path(pwsh_path, work_root, repo, fixture_path, kind):
+    """Build a bare-repo file:// remote pre-populated for tree-equivalence tests.
+
+    Approach: run Promote-ToVerified.ps1 once in LLM_WIKI_GITEA_MOCK_MODE=local_only
+    (the "warmup") to produce a worktree + branch + commit using the same
+    Invoke-LocalGitPromotion code path the test phase will exercise.  Then push
+    that branch to a fresh bare repo at <work_root>/remote.git.
+
+      kind='match'    -> push the warmup commit as-is.  Test phase produces a
+                         fresh commit with the same tree, equivalence holds.
+      kind='mismatch' -> amend the warmup commit with a divergence marker
+                         BEFORE pushing.  Test phase produces a fresh commit
+                         with the original tree; trees differ, equivalence
+                         fails closed.
+
+    The branch alias and worktree path are recovered from git's own state
+    (worktree list + rev-parse) rather than from the script's stdout/stderr,
+    because PowerShell's exception formatter ANSI-decorates and word-wraps
+    the throw message in ways that break stable regex parsing.
+
+    Returns a dict of env overrides to merge into _run_promote's env (sets
+    GITEA_URL to the file:// bare-repo URL).  The bare repo lives inside
+    work_root, so the test's outer cleanup removes it.
+    """
+    bare_repo_path = work_root / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", str(bare_repo_path)],
+        check=True, capture_output=True, timeout=15,
+    )
+    bare_repo_url = "file://" + bare_repo_path.as_posix()
+
+    warmup = _run_promote(
+        pwsh_path, repo, work_root, dry_run=False,
+        env_overrides={"LLM_WIKI_GITEA_MOCK_MODE": "local_only"},
+    )
+    # local_only deliberately throws after local-git completes, so warmup
+    # returncode is non-zero by design.  We don't assert on it -- we read
+    # the resulting worktree state directly.
+    worktree_path, branch_alias = _find_warmup_worktree(work_root)
+
+    if kind == "mismatch":
+        # Amend the warmup commit to introduce a tree divergence.  We modify
+        # the verified file inside the warmup worktree, then `git commit
+        # --amend` to keep the same parent (the work_root's main commit).
+        # That way only the tree SHA differs -- the parent SHA still matches
+        # what the test phase will produce, isolating the assertion to
+        # TreesMatch=false.
+        verified_in_worktree = (
+            Path(worktree_path) / "pipeline" / "verified" / fixture_path.name
+        )
+        if not verified_in_worktree.exists():
+            raise RuntimeError(
+                f"tree-path warmup: verified file not found in warmup worktree: "
+                f"{verified_in_worktree}"
+            )
+        original = verified_in_worktree.read_bytes()
+        verified_in_worktree.write_bytes(
+            original + b"\n\n<!-- TREE-DIVERGENCE-MARKER -->\n"
+        )
+        subprocess.run(
+            ["git", "-C", worktree_path, "add",
+             str(verified_in_worktree.relative_to(worktree_path))],
+            check=True, capture_output=True, timeout=15,
+        )
+        subprocess.run(
+            ["git", "-C", worktree_path, "commit", "--amend",
+             "--no-edit", "-q"],
+            check=True, capture_output=True, timeout=15,
+        )
+    elif kind != "match":
+        raise ValueError(f"_setup_bare_repo_for_tree_path: unknown kind {kind!r}")
+
+    # Push the branch from the warmup worktree to the bare repo.  We push the
+    # branch as `<alias>:<alias>` so the bare repo gets the exact branch name
+    # the test will look for.
+    subprocess.run(
+        ["git", "-C", worktree_path, "push", "-q", bare_repo_url,
+         f"{branch_alias}:{branch_alias}"],
+        check=True, capture_output=True, timeout=30,
+    )
+
+    # Tear down the warmup worktree AND its local branch ref.  Both must go,
+    # otherwise the test-phase Invoke-LocalGitPromotion sees the branch still
+    # exists locally and refuses to recreate it ("Local branch ... already
+    # exists" -> PROMOTION_LOCAL_GIT_FAILED before tree-equivalence runs).
+    # `worktree remove` cleans the working tree but leaves the branch ref;
+    # `branch -D` cleans the ref.  Both are best-effort -- the final test
+    # cleanup will catch anything we miss (Windows file-handle race tolerated).
+    try:
+        subprocess.run(
+            ["git", "-C", str(work_root), "worktree", "remove",
+             "--force", worktree_path],
+            check=False, capture_output=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        subprocess.run(
+            ["git", "-C", str(work_root), "branch", "-D", branch_alias],
+            check=False, capture_output=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return {"GITEA_URL": bare_repo_url}
+
+
+def _setup_bare_repo_match(pwsh_path, work_root, repo, fixture_path):
+    return _setup_bare_repo_for_tree_path(
+        pwsh_path, work_root, repo, fixture_path, "match"
+    )
+
+
+def _setup_bare_repo_mismatch(pwsh_path, work_root, repo, fixture_path):
+    return _setup_bare_repo_for_tree_path(
+        pwsh_path, work_root, repo, fixture_path, "mismatch"
+    )
+
+
 def _assert_dry_run(label, run_data):
     """Assertions for the -DryRun invocation."""
     results = []
@@ -1944,16 +2146,21 @@ def run_promote_local_tests():
 
 
 # ---------------------------------------------------------------------------
-# promote-full stage (Phase 1.9 / TD-002 part 2)
+# promote-full stage (Phase 1.9 / TD-002 part 2; tree-eq paths Phase 2.0)
 # ---------------------------------------------------------------------------
-# Exercises the full Promote-ToVerified.ps1 flow under the new mock modes
-# introduced by 03b: pr_success (happy path), push_fail (rollback after
-# local-git, before push success), pr_fail (rollback after push success,
-# remote branch deletion), existing_open_pr (idempotent re-run short-circuit).
+# Exercises the full Promote-ToVerified.ps1 flow under six mock modes:
+#   pr_success      -- happy path (push mocked, PR creation mocked-success)
+#   push_fail       -- synthetic push failure, rollback after local-git
+#   pr_fail         -- PR creation fails after push, branch deletion + rollback
+#   existing_open_pr -- idempotent re-run short-circuit at Step 2
+#   tree_match      -- orphan-branch detected, bare-repo fixture has equivalent
+#                      tree, push is skipped, PR is created (P0-8 recovery)
+#   tree_mismatch   -- orphan-branch detected, bare-repo fixture has divergent
+#                      tree, fail-closed throw + rollback (P0-8 violation)
 #
-# Tree-equivalence paths (orphan-recovery: tree_match, tree_mismatch) are
-# deferred to a follow-up phase - they need a bare-repo fixture and the real
-# fetch path is exercised by the live throwaway smoke test (Stage 8).
+# tree_match and tree_mismatch use a real file:// bare-repo fixture so that
+# Test-RemoteTreeEquivalence's git fetch + rev-parse path actually runs.  The
+# bare repo is built per-test by _setup_bare_repo_for_tree_path.
 
 
 def _assert_full_success_path(label, run_data):
@@ -2221,6 +2428,196 @@ def _assert_full_idempotent_path(label, run_data):
     return results
 
 
+def _assert_full_tree_match_path(label, run_data):
+    """Tree-match orphan-recovery path: bare repo holds an identical tree, so
+    Test-RemoteTreeEquivalence returns equivalent=true, push is SKIPPED, and
+    PR creation succeeds against the mock.  Closes the P0-8 recovery branch."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-full", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc == 0, f"tree-match exit code is 0 ({rc})", 0, rc)
+
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    add(
+        "tree-equivalent to local intent" in combined,
+        "tree-match output reports tree-equivalent recovery",
+        "substring present",
+        "missing" if "tree-equivalent to local intent" not in combined else "ok",
+    )
+    add(
+        "Promotion complete: PR #1" in combined,
+        "tree-match output reports PR #1 created",
+        "substring present",
+        "missing" if "Promotion complete: PR #1" not in combined else "ok",
+    )
+
+    # tree_sha_check JSONL event: must be exactly one, equivalent, with
+    # trees_match=true and parents_match=true.
+    tree_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "tree_sha_check"
+    ]
+    add(
+        len(tree_events) == 1,
+        f"exactly one tree_sha_check event ({len(tree_events)} found)",
+        1, len(tree_events),
+    )
+    if tree_events:
+        te = tree_events[0]
+        add(te.get("equivalent") is True, "tree_sha_check.equivalent == True", True, te.get("equivalent"))
+        add(
+            te.get("outcome") == "equivalent",
+            "tree_sha_check.outcome == 'equivalent'",
+            "equivalent", te.get("outcome"),
+        )
+        add(te.get("trees_match") is True, "tree_sha_check.trees_match == True", True, te.get("trees_match"))
+        add(te.get("parents_match") is True, "tree_sha_check.parents_match == True", True, te.get("parents_match"))
+
+    # promotion_completed: PR created, but pushed_to_remote=False because we
+    # took the skip-push (recovery) branch.  tree_sha_check field == "equivalent".
+    promotion_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_completed"
+    ]
+    add(
+        len(promotion_events) == 1,
+        f"exactly one promotion_completed event ({len(promotion_events)} found)",
+        1, len(promotion_events),
+    )
+    if promotion_events:
+        pc = promotion_events[0]
+        add(pc.get("pr_number") == 1, "promotion_completed.pr_number == 1", 1, pc.get("pr_number"))
+        add(
+            pc.get("pushed_to_remote") is False,
+            "promotion_completed.pushed_to_remote == False (skip-push path)",
+            False, pc.get("pushed_to_remote"),
+        )
+        add(
+            pc.get("tree_sha_check") == "equivalent",
+            "promotion_completed.tree_sha_check == 'equivalent'",
+            "equivalent", pc.get("tree_sha_check"),
+        )
+
+    # Push event must NOT fire on the skip-push path.
+    push_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_push_completed"
+    ]
+    add(
+        len(push_events) == 0,
+        f"tree-match emits no promotion_push_completed event ({len(push_events)} found)",
+        0, len(push_events),
+    )
+
+    # No operational_fault on the recovery path.
+    faults = [e for e in run_data["jsonl_events"] if e.get("event_type") == "operational_fault"]
+    add(
+        len(faults) == 0,
+        f"tree-match emits no operational_fault events ({len(faults)} found)",
+        0, len(faults),
+    )
+
+    return results
+
+
+def _assert_full_tree_mismatch_path(label, run_data):
+    """Tree-mismatch orphan path: bare repo has a divergent tree (warmup
+    amended with a marker), so Test-RemoteTreeEquivalence returns
+    equivalent=false, the script throws fail-closed per P0-8, and the local
+    worktree+branch are rolled back.  No PR, no push, no completion event."""
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(TestResult(label, "promote-full", passed, message, expected, actual))
+
+    rc = run_data["returncode"]
+    add(rc != 0, f"tree-mismatch exit code is non-zero ({rc})", "non-zero", rc)
+
+    # The fail-closed message comes through PowerShell's `throw`, which the
+    # interpreter wraps with `     | ` prefixes for terminal display.  Apply
+    # _normalize_ps_text so wrapped phrases stay searchable.
+    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
+    combined_norm = _normalize_ps_text(combined)
+    add(
+        "non-equivalent tree state" in combined_norm,
+        "tree-mismatch output reports 'non-equivalent tree state'",
+        "substring present",
+        "missing" if "non-equivalent tree state" not in combined_norm else "ok",
+    )
+    add(
+        "Fail-closed per P0-8" in combined_norm,
+        "tree-mismatch output cites P0-8 fail-closed",
+        "substring present",
+        "missing" if "Fail-closed per P0-8" not in combined_norm else "ok",
+    )
+
+    # tree_sha_check event is still emitted -- the function logs the result
+    # before returning to the caller, regardless of equivalence outcome.
+    tree_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "tree_sha_check"
+    ]
+    add(
+        len(tree_events) == 1,
+        f"exactly one tree_sha_check event ({len(tree_events)} found)",
+        1, len(tree_events),
+    )
+    if tree_events:
+        te = tree_events[0]
+        add(te.get("equivalent") is False, "tree_sha_check.equivalent == False", False, te.get("equivalent"))
+        add(
+            te.get("outcome") == "not_equivalent_failed_closed",
+            "tree_sha_check.outcome == 'not_equivalent_failed_closed'",
+            "not_equivalent_failed_closed", te.get("outcome"),
+        )
+        add(te.get("trees_match") is False, "tree_sha_check.trees_match == False", False, te.get("trees_match"))
+        # Parents should match: amend keeps the same parent (work_root's main),
+        # which the test phase also points its commit at.  This isolates the
+        # divergence to TreesMatch=false.
+        add(
+            te.get("parents_match") is True,
+            "tree_sha_check.parents_match == True (amend preserves parent)",
+            True, te.get("parents_match"),
+        )
+
+    # No promotion_completed -- the throw fires before completion.
+    promotion_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_completed"
+    ]
+    add(
+        len(promotion_events) == 0,
+        f"tree-mismatch emits no promotion_completed event ({len(promotion_events)} found)",
+        0, len(promotion_events),
+    )
+
+    # No push event -- throw fires before push step.
+    push_events = [
+        e for e in run_data["jsonl_events"]
+        if e.get("event_type") == "promotion_push_completed"
+    ]
+    add(
+        len(push_events) == 0,
+        f"tree-mismatch emits no promotion_push_completed event ({len(push_events)} found)",
+        0, len(push_events),
+    )
+
+    # The fail-closed throw bypasses Write-PromotionFault deliberately, so no
+    # operational_fault event fires for the mismatch itself.  (If a future
+    # refactor adds a fault, this assertion is the canary that catches it.)
+    faults = [e for e in run_data["jsonl_events"] if e.get("event_type") == "operational_fault"]
+    add(
+        len(faults) == 0,
+        f"tree-mismatch emits no operational_fault events ({len(faults)} found)",
+        0, len(faults),
+    )
+
+    return results
+
+
 def run_promote_full_tests():
     """Run the promote-full stage assertions.
 
@@ -2231,9 +2628,11 @@ def run_promote_full_tests():
       2. push_fail (push failure): synthetic push failure, rollback verified
       3. pr_fail (PR-creation failure after push): rollback + branch deletion
       4. existing_open_pr (idempotent re-run): short-circuit at Step 2
-
-    Tree-match and tree-mismatch paths are deferred (need bare-repo fixture);
-    the real push path is exercised by the live throwaway smoke test (Stage 8).
+      5. tree_match (orphan-recovery, equivalent tree): bare-repo fixture +
+         file:// remote -> Test-RemoteTreeEquivalence returns equivalent=true,
+         push is skipped, PR is created.  Closes the P0-8 recovery branch.
+      6. tree_mismatch (orphan, divergent tree): bare-repo fixture amended
+         with a marker -> equivalent=false, fail-closed throw, rollback.
 
     Returns (results, skipped_reason_or_None).
     """
@@ -2261,21 +2660,39 @@ def run_promote_full_tests():
 
     all_results = []
 
+    # Tuple shape: (label, mock_mode, setup_fn_or_None, assert_fn).
+    # setup_fn (when set) runs before _run_promote and returns extra env
+    # overrides to merge in (e.g., GITEA_URL pointing at a bare-repo fixture).
     paths = [
-        ("promote-full:success",     "pr_success",        _assert_full_success_path),
-        ("promote-full:push-fail",   "push_fail",         _assert_full_push_fail_path),
-        ("promote-full:pr-fail",     "pr_fail",           _assert_full_pr_fail_path),
-        ("promote-full:idempotent",  "existing_open_pr",  _assert_full_idempotent_path),
+        ("promote-full:success",       "pr_success",       None,                          _assert_full_success_path),
+        ("promote-full:push-fail",     "push_fail",        None,                          _assert_full_push_fail_path),
+        ("promote-full:pr-fail",       "pr_fail",          None,                          _assert_full_pr_fail_path),
+        ("promote-full:idempotent",    "existing_open_pr", None,                          _assert_full_idempotent_path),
+        ("promote-full:tree-match",    "tree_match",       _setup_bare_repo_match,        _assert_full_tree_match_path),
+        ("promote-full:tree-mismatch", "tree_mismatch",    _setup_bare_repo_mismatch,     _assert_full_tree_mismatch_path),
     ]
 
-    for label, mock_mode, assert_fn in paths:
+    for label, mock_mode, setup_fn, assert_fn in paths:
         work_root = Path(tempfile.mkdtemp(prefix="llm-wiki-promote-full-"))
         try:
             repo = _setup_promote_local_repo(work_root, fixture_path)
+            env_overrides = {"LLM_WIKI_GITEA_MOCK_MODE": mock_mode}
+            if setup_fn is not None:
+                try:
+                    extra_env = setup_fn(pwsh_path, work_root, repo, fixture_path)
+                except Exception as exc:
+                    all_results.append(TestResult(
+                        label, "promote-full", False,
+                        f"setup_fn failed: {type(exc).__name__}: {exc}",
+                        "setup succeeds", str(exc)[:120],
+                    ))
+                    continue
+                if extra_env:
+                    env_overrides.update(extra_env)
             try:
                 run_data = _run_promote(
                     pwsh_path, repo, work_root, dry_run=False,
-                    env_overrides={"LLM_WIKI_GITEA_MOCK_MODE": mock_mode},
+                    env_overrides=env_overrides,
                 )
             except subprocess.TimeoutExpired:
                 all_results.append(TestResult(
@@ -2418,7 +2835,8 @@ def main():
             print(f"  Gitea: mocked via LLM_WIKI_GITEA_MOCK_MODE per path")
             print(f"  paths exercised: success (pr_success), push-fail "
                   f"(push_fail), pr-fail (pr_fail), idempotent "
-                  f"(existing_open_pr)")
+                  f"(existing_open_pr), tree-match + tree-mismatch "
+                  f"(real bare-repo file:// fixture)")
             all_results.extend(promote_full_results)
 
     # --- Determine exit code ---
