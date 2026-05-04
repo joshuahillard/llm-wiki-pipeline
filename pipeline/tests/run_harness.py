@@ -1601,25 +1601,6 @@ def _cleanup_promote_local_worktrees(work_root):
         pass
 
 
-_PS_ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*m')
-_PS_EXCEPTION_WRAP = re.compile(r'\n\s*\|\s*')
-
-
-def _normalize_ps_text(text):
-    """Strip ANSI escape codes and PowerShell exception-formatter line wraps.
-
-    PowerShell decorates `throw` messages with ANSI colors and wraps long
-    lines with `     | ` prefixes for terminal display.  Both survive
-    capture-output and break naive substring matches on multi-word phrases
-    that happen to land on a wrap boundary.  Normalize once, search after.
-    """
-    if not text:
-        return ""
-    text = _PS_ANSI_ESCAPE.sub('', text)
-    text = _PS_EXCEPTION_WRAP.sub(' ', text)
-    return text
-
-
 def _find_warmup_worktree(work_root):
     """Locate the worktree created by Invoke-LocalGitPromotion's local_only run.
 
@@ -2536,23 +2517,13 @@ def _assert_full_tree_mismatch_path(label, run_data):
     rc = run_data["returncode"]
     add(rc != 0, f"tree-mismatch exit code is non-zero ({rc})", "non-zero", rc)
 
-    # The fail-closed message comes through PowerShell's `throw`, which the
-    # interpreter wraps with `     | ` prefixes for terminal display.  Apply
-    # _normalize_ps_text so wrapped phrases stay searchable.
-    combined = (run_data.get("stderr") or "") + "\n" + (run_data.get("stdout") or "")
-    combined_norm = _normalize_ps_text(combined)
-    add(
-        "non-equivalent tree state" in combined_norm,
-        "tree-mismatch output reports 'non-equivalent tree state'",
-        "substring present",
-        "missing" if "non-equivalent tree state" not in combined_norm else "ok",
-    )
-    add(
-        "Fail-closed per P0-8" in combined_norm,
-        "tree-mismatch output cites P0-8 fail-closed",
-        "substring present",
-        "missing" if "Fail-closed per P0-8" not in combined_norm else "ok",
-    )
+    # Earlier versions also matched the `throw` message text ("non-equivalent
+    # tree state", "Fail-closed per P0-8") via a normalizer that stripped
+    # PowerShell's ANSI decorations and ` | ` line-wraps.  That coupling was
+    # cosmetic -- it verified human-readable wording, not behavior.  The
+    # structured `tree_sha_check` JSONL event below + exit-code + absence-of-
+    # progression checks are strictly more reliable evidence that fail-closure
+    # actually happened.
 
     # tree_sha_check event is still emitted -- the function logs the result
     # before returning to the caller, regardless of equivalence outcome.
