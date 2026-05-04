@@ -199,15 +199,28 @@ function Invoke-GiteaApi {
                 }
             }
             if ($Method -eq "GET" -and $Endpoint -match "/pulls\?state=open") {
+                # Phase 2.1 Item 4: full consumer_required_fields shape per
+                # gitea_pr_response_shape.json fixture.  Pre-Phase-2.1 this
+                # canned PR was missing user, created_at, updated_at,
+                # closed_at, merged_at, merge_base, and head.sha -- all of
+                # which Invoke-DeclinedPrReconciliation reads.  The bug was
+                # latent (mock paths never exercised the declined-PR consumer
+                # against an open-PR list response), but is now fixed.
                 $cannedExistingPr = [PSCustomObject]@{
-                    number   = 1
-                    title    = "auto-promote: existing-pr"
-                    state    = "open"
-                    html_url = "$($GiteaConfig.BaseUrl.TrimEnd('/'))/$($GiteaConfig.RepoOwner)/$($GiteaConfig.RepoName)/pulls/1"
-                    url      = "<mocked>"
-                    head     = [PSCustomObject]@{ ref = "mocked-existing-branch" }
-                    base     = [PSCustomObject]@{ ref = "main" }
-                    merged   = $false
+                    number     = 1
+                    title      = "auto-promote: existing-pr"
+                    state      = "open"
+                    html_url   = "$($GiteaConfig.BaseUrl.TrimEnd('/'))/$($GiteaConfig.RepoOwner)/$($GiteaConfig.RepoName)/pulls/1"
+                    url        = "<mocked>"
+                    head       = [PSCustomObject]@{ ref = "mocked-existing-branch"; sha = "0000000000000000000000000000000000000001" }
+                    base       = [PSCustomObject]@{ ref = "main" }
+                    user       = [PSCustomObject]@{ login = "mocked-user" }
+                    merged     = $false
+                    created_at = "2026-01-01T00:00:00Z"
+                    updated_at = "2026-01-01T00:00:00Z"
+                    closed_at  = $null
+                    merged_at  = $null
+                    merge_base = "0000000000000000000000000000000000000002"
                 }
                 return @{
                     StatusCode = 200
@@ -276,16 +289,28 @@ function Invoke-GiteaApi {
                 }
             }
             if ($mockMode -in @("pr_success", "push_fail", "tree_match", "tree_mismatch")) {
+                # Phase 2.1 Item 4: full consumer_required_fields shape per
+                # gitea_pr_response_shape.json fixture.  Pre-Phase-2.1 this
+                # canned PR was missing user, created_at, updated_at, closed_at,
+                # merged_at, merge_base, merged, and head.sha.  Bug was latent
+                # but documented in the fixture as a parity requirement.
                 $headRef = if ($Body) { $Body.head } else { "" }
                 $baseRef = if ($Body) { $Body.base } else { "main" }
                 $cannedPr = [PSCustomObject]@{
-                    number   = 1
-                    title    = if ($Body) { $Body.title } else { "mocked-pr" }
-                    state    = "open"
-                    html_url = "$($GiteaConfig.BaseUrl.TrimEnd('/'))/$($GiteaConfig.RepoOwner)/$($GiteaConfig.RepoName)/pulls/1"
-                    url      = "<mocked>"
-                    head     = [PSCustomObject]@{ ref = $headRef }
-                    base     = [PSCustomObject]@{ ref = $baseRef }
+                    number     = 1
+                    title      = if ($Body) { $Body.title } else { "mocked-pr" }
+                    state      = "open"
+                    html_url   = "$($GiteaConfig.BaseUrl.TrimEnd('/'))/$($GiteaConfig.RepoOwner)/$($GiteaConfig.RepoName)/pulls/1"
+                    url        = "<mocked>"
+                    head       = [PSCustomObject]@{ ref = $headRef; sha = "0000000000000000000000000000000000000003" }
+                    base       = [PSCustomObject]@{ ref = $baseRef }
+                    user       = [PSCustomObject]@{ login = "mocked-user" }
+                    merged     = $false
+                    created_at = "2026-01-01T00:00:00Z"
+                    updated_at = "2026-01-01T00:00:00Z"
+                    closed_at  = $null
+                    merged_at  = $null
+                    merge_base = "0000000000000000000000000000000000000004"
                 }
                 return @{
                     StatusCode = 201

@@ -2717,6 +2717,105 @@ def _assert_full_tree_mismatch_path(label, run_data):
     return results
 
 
+GITEA_PR_SHAPE_FIXTURE_PATH = SCRIPT_DIR / "fixtures" / "gitea_pr_response_shape.json"
+
+
+def run_fixture_parity_tests():
+    """Phase 2.1 Item 4: assert the Invoke-GiteaApi pr_success mock contains
+    every field declared in the consumer_required_fields contract.
+
+    The fixture pipeline/tests/fixtures/gitea_pr_response_shape.json was
+    captured live during the Phase 1.9 throwaway-Gitea smoke test and
+    declares which fields consumer code paths in Promote-ToVerified.ps1
+    actually read.  This test guards the contract: if the mock's pr_success
+    canned response is missing any required field, a future code path that
+    exercises the mock through that field would silently misbehave (latent
+    bug).
+
+    The mock's field shape is hardcoded below in MOCK_PR_FIELDS.  It must
+    be kept in sync with Invoke-GiteaApi's pr_success branch in
+    Promote-ToVerified.ps1.  If the mock changes, this constant updates
+    too -- the diff hygiene is the protection against drift.
+
+    Returns (results, None).  No skipping; this is a pure file-read +
+    set-membership check (no pwsh, no network, no fixture-corpus deps).
+    """
+    results = []
+
+    def add(passed, message, expected, actual):
+        results.append(
+            TestResult(
+                "fixtures:gitea-pr-shape", "fixtures",
+                passed, message, expected, actual,
+            )
+        )
+
+    if not GITEA_PR_SHAPE_FIXTURE_PATH.exists():
+        add(
+            False,
+            f"fixture file exists: {GITEA_PR_SHAPE_FIXTURE_PATH.name}",
+            "exists", "missing",
+        )
+        return results, None
+
+    try:
+        with open(GITEA_PR_SHAPE_FIXTURE_PATH, encoding="utf-8") as fh:
+            fixture = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        add(
+            False,
+            f"fixture parses as JSON",
+            "valid JSON", f"parse error: {str(exc)[:80]}",
+        )
+        return results, None
+
+    add(
+        isinstance(fixture.get("_meta"), dict),
+        "fixture has '_meta' object",
+        "object", type(fixture.get("_meta")).__name__,
+    )
+
+    required = fixture.get("consumer_required_fields", {})
+    add(
+        isinstance(required, dict) and len(required) > 0,
+        "fixture has non-empty consumer_required_fields",
+        "non-empty dict",
+        f"{type(required).__name__} (len={len(required) if isinstance(required, dict) else 'n/a'})",
+    )
+
+    # Hardcoded reflection of Invoke-GiteaApi pr_success branch in
+    # Promote-ToVerified.ps1 (the canned [PSCustomObject]@{...} returned
+    # for POST /pulls under LLM_WIKI_GITEA_MOCK_MODE in {pr_success,
+    # push_fail, tree_match, tree_mismatch}).  Update in lockstep with
+    # the script when fields are added or removed -- the diff hygiene is
+    # the protection against drift between code and test.
+    MOCK_PR_FIELDS = {
+        "top_level": {
+            "number", "title", "state", "html_url", "url",
+            "head", "base",
+            "merged", "user",
+            "created_at", "updated_at",
+            "closed_at", "merged_at", "merge_base",
+        },
+        "head": {"ref", "sha"},
+        "base": {"ref"},
+        "user": {"login"},
+    }
+
+    for category in ["top_level", "head", "base", "user"]:
+        required_set = set(required.get(category, []))
+        mock_set = MOCK_PR_FIELDS.get(category, set())
+        missing = required_set - mock_set
+        add(
+            len(missing) == 0,
+            f"mock pr_success.{category} contains all consumer_required_fields",
+            "0 missing",
+            f"missing: {sorted(missing)}" if missing else "ok",
+        )
+
+    return results, None
+
+
 def run_promote_full_tests():
     """Run the promote-full stage assertions.
 
@@ -2814,7 +2913,7 @@ def main():
     )
     parser.add_argument(
         "--stage",
-        choices=["parser", "validator", "promote-local", "promote-full", "all"],
+        choices=["parser", "validator", "promote-local", "promote-full", "fixtures", "all"],
         default="all",
         help="Which stage to test (default: all)"
     )
@@ -2915,6 +3014,13 @@ def main():
             print(f"  paths exercised: dry-run, live (post-local-git throw), "
                   f"rerun (idempotent recovery via startup reconciliation)")
             all_results.extend(promote_results)
+
+    # --- Fixture parity assertions (Phase 2.1 Item 4) ---
+    if args.stage in ("fixtures", "all"):
+        print(f"\n--- Fixture Parity Assertions "
+              f"(Gitea PR shape: mock vs consumer-required-fields contract) ---")
+        fixture_results, _ = run_fixture_parity_tests()
+        all_results.extend(fixture_results)
 
     # --- Promote-full assertions (TD-002 part 2 / Phase 1.9) ---
     if args.stage in ("promote-full", "all"):
