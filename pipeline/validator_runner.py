@@ -559,6 +559,11 @@ def run(article_path, config_path=None, config=None, provider=None,
         source_id, frontmatter, body or "", system_prompt, taxonomy
     )
 
+    # Capture token_info at function scope so we can attach it to the result
+    # AFTER schema validation succeeds (Phase 2.1 / Items 5+6).  When body is
+    # None (parse-only path), token_info stays None and no metadata is
+    # attached -- only paths that actually invoked the LLM get token data.
+    token_info = None
     if body is not None:
         fits, token_info = check_token_budget(payload, config)
         if not fits:
@@ -599,6 +604,14 @@ def run(article_path, config_path=None, config=None, provider=None,
         for path_str, message in schema_errors:
             print(f"  [{path_str}] {message}", file=sys.stderr)
         return EXIT_SCHEMA_FAULT, None
+
+    # Attach tokenization metadata to the validated result.  This is added
+    # AFTER schema validation passes, so non-schema fields don't fail
+    # validation.  Run-Validator.ps1 reads these and threads article_token_count
+    # into the ledger entry + emits a token_count_completed JSONL info event.
+    if token_info is not None:
+        result_dict["article_token_count"] = token_info["input_tokens"]
+        result_dict["token_method"] = token_info["method"]
 
     decision = result_dict.get("decision", "")
     exit_code = DECISION_EXIT_MAP.get(decision, EXIT_SCHEMA_FAULT)

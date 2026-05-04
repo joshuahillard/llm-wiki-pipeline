@@ -1115,6 +1115,36 @@ def _assert_orchestration_run(label, expected_decision, run_data):
         len(completed),
     )
 
+    # --- token_count_completed (Phase 2.1 Item 6) ---
+    # Positive INFO log line emitted by Run-Validator after the validator
+    # returns a result that includes tokenization metadata.  Provides the
+    # evidence symmetry follow-up from Phase 1.6 (live-tokenizer success
+    # was previously inferred from absence of fallback warnings).
+    token_events = [
+        e for e in events if e.get("event_type") == "token_count_completed"
+    ]
+    add(
+        len(token_events) == 1,
+        f"exactly one token_count_completed event ({len(token_events)} found)",
+        1,
+        len(token_events),
+    )
+    if token_events:
+        te = token_events[0]
+        add(
+            isinstance(te.get("token_method"), str) and te.get("token_method"),
+            "token_count_completed.token_method is a non-empty string",
+            "non-empty string",
+            repr(te.get("token_method"))[:40],
+        )
+        add(
+            isinstance(te.get("article_token_count"), int)
+            and te.get("article_token_count") > 0,
+            "token_count_completed.article_token_count is a positive int",
+            "positive int",
+            repr(te.get("article_token_count"))[:40],
+        )
+
     if completed:
         ec = completed[0]
         add(
@@ -1266,6 +1296,19 @@ def _assert_orchestration_run(label, expected_decision, run_data):
                 f"ledger entry decision == '{expected_decision}'",
                 expected_decision,
                 entry.get("decision"),
+            )
+
+            # Phase 2.1 Item 5: article_token_count must be threaded into the
+            # ledger from the validator's tokenization step.  Pre-Phase-2.1
+            # this field was reserved as $null in Run-Validator.ps1; now it
+            # carries a real count (anthropic_api when API key available,
+            # byte_estimate fallback otherwise).
+            atc = entry.get("article_token_count")
+            add(
+                isinstance(atc, int) and atc > 0,
+                "ledger field 'article_token_count' is a positive int",
+                "positive int",
+                repr(atc)[:40],
             )
 
             svr = entry.get("schema_validated_result")

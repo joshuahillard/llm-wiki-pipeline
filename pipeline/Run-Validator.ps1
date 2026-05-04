@@ -454,6 +454,35 @@ foreach ($file in $files) {
         default   { $summary.faults++ }
     }
 
+    # Phase 2.1 Items 5+6: thread tokenization metadata from validator output.
+    # validator_runner.py attaches article_token_count + token_method to the
+    # result dict AFTER schema validation succeeds, but only when the LLM was
+    # actually invoked (skip-cases like the parse-only path leave them unset).
+    # Defensive property access required under Set-StrictMode.
+    $articleTokenCount = $null
+    $tokenMethod = $null
+    if ($resultJson.PSObject.Properties.Name -contains 'article_token_count') {
+        $articleTokenCount = $resultJson.article_token_count
+    }
+    if ($resultJson.PSObject.Properties.Name -contains 'token_method') {
+        $tokenMethod = [string]$resultJson.token_method
+    }
+
+    # Positive INFO log line: emit only when tokenization actually ran (LLM
+    # path).  Provides the evidence-symmetry follow-up from Phase 1.6 -- the
+    # success of the live tokenizer is now directly logged, not just inferred
+    # from the absence of a fallback warning.
+    if ($tokenMethod) {
+        Write-JsonlEvent -EventType "token_count_completed" -Payload @{
+            transaction_key     = $transactionKey
+            source_id           = [string]$parserJson.source_id
+            document_hash       = $documentHash
+            context_digest      = $contextDigest
+            token_method        = $tokenMethod
+            article_token_count = $articleTokenCount
+        }
+    }
+
     if (-not $DryRun) {
         if ($decision -eq "reject" -or $decision -eq "escalate") {
             New-FeedbackSidecar -ArticlePath $file.FullName -ValidationResult $resultJson
@@ -461,6 +490,14 @@ foreach ($file in $files) {
         elseif (Test-Path -LiteralPath ($file.FullName + ".feedback.md")) {
             Remove-Item -LiteralPath ($file.FullName + ".feedback.md") -Force -ErrorAction SilentlyContinue
         }
+
+        # schema_validated_result must contain ONLY the schema-validated LLM
+        # output.  validator_runner.py attaches article_token_count + token_method
+        # after schema validation succeeds; strip them here so the integration
+        # stage's `validates against validation_result.schema.json` assertion
+        # holds.  full_model_output retains the un-stripped object for full
+        # auditability (it is not schema-checked).
+        $schemaValidatedResult = $resultJson | Select-Object -ExcludeProperty article_token_count, token_method
 
         $ledgerPath = Write-LedgerEntry -Entry @{
             transaction_key         = $transactionKey
@@ -472,10 +509,10 @@ foreach ($file in $files) {
             decision                = $decision
             full_model_output       = $resultJson
             model_config_snapshot   = $effectiveConfigObject
-            schema_validated_result = $resultJson
+            schema_validated_result = $schemaValidatedResult
             reviewer_outcome        = $null
             reviewer_timestamp      = $null
-            article_token_count     = $null
+            article_token_count     = $articleTokenCount
             created_utc             = (Get-Date).ToUniversalTime().ToString("o")
         }
 
