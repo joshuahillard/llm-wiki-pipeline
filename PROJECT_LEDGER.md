@@ -480,6 +480,44 @@
 **Test count:** 412/412 assertions passing (`--stage all`) — net +25 from Phase 1.9 (387/387). promote-full: 30/30 → 55/55 (added tree-match path with 14 assertions; tree-mismatch path with 11 assertions). Three consecutive `--stage all` runs produced byte-identical pass counts and exit 0. No live smoke test in this phase.
 **Status:** Phase 1.9 follow-up #1 closed (tree-equivalence automated test coverage). Open Phase 2.0 follow-ups carrying forward: live orphan-recovery smoke against throwaway Gitea (item 3 of the Phase Review's recommended sequence); CI-time mock-vs-real shape parity assertion (Phase 2.1 item 4); PowerShell exception-formatter coupling and Windows file-handle cleanup race (separate quality items). Carry-forward TD-004 (documentation alignment, Low) remains open.
 
+### Phase 2.1 follow-up — Live declined-PR smoke against throwaway Gitea (May 4, 2026)
+
+**What happened:** Live smoke against the Phase 1.9 throwaway Gitea (`gitea.com/joshuahillard/llm-wiki-pipeline-smoke`). Original intent was to exercise the orphan-recovery path (P0-8) end-to-end against real Gitea by closing a PR via UI and re-running promote. In practice, the smoke exposed that "orphan via UI close" is not a reachable state — closing a PR via the UI leaves a closed-PR record on the remote, which the script's declined-PR detection (P0-11) catches via the `gitea_remote_pr_state` query before the orphan path is considered. This is correct production behavior: a closed-without-merge PR is a human signal saying "do not auto-promote", and the script honored it. Phase 2.1 itself shipped in commits `31c1cf0` (Items 5+6: `article_token_count` threading + `token_count_completed` log) and `09df90b` (Item 4: fixture-parity test + mock `pr_success` contract fix).
+
+**What was actually validated (NEW coverage vs the Phase 1.9 live smoke):**
+- Live declined-PR detection via `gitea_remote_pr_state` query — never exercised live before this smoke; Phase 1.9 only covered clean publish + idempotent re-run.
+- Token-bearing URL on the API GET path — Phase 1.9 only exercised POST for PR creation; the GET for closed-PR query is structurally similar but not the same code path.
+- Reconciliation ledger entry shape — full structured `remote_evidence` (`pr_state`, `pr_merged`, `pr_merge_base`, `pr_head_sha`, `pr_user_login`, `pr_created_at`/`updated_at`/`closed_at`), conservative mapping note ("Source is remote Gitea PR state, not a proven human-decline fact"), `reviewer_outcome=declined_by_human`.
+
+**Smoke flow (chronological):**
+1. Pushed Phase 2.0 + 2.1 commits to public main; HEAD before the smoke: `09df90b`.
+2. Set process-scope env vars for the throwaway Gitea (cleared earlier-session bogus User-scope values first via `[Environment]::SetEnvironmentVariable($_, $null, 'User')`).
+3. Created fresh provisional article `pipeline/provisional/orphan-smoke-2026-05-04.md`. The chat-paste linkifier corrupted the `.md` filename on the first attempt; the `'.' + 'md'` extension-split workaround succeeded on retry.
+4. Direct-call to `Promote-ToVerified.ps1` with `-ContextDigest "smoke-orphan-2026-05-04"` — a literal placeholder string, not a real composite digest. Acceptable for the smoke because both runs use the same value, so digest-keyed checks see consistent input.
+5. First run: PR #2 created on Gitea (`auto/orphan-smoke-2026-05-04/d0cfb6c2`, commit `f53b147e0ae...`, `tree_sha_check=skipped` because the branch was new on the remote — orphan path correctly did not fire on a first push).
+6. Manual close of PR #2 in the Gitea UI (Close, not Merge; branch left intact and verified in the branches list).
+7. Deleted local `llm-wiki-state/pending_pr/pending_d0cfb6c206e8.json` to prevent the LOCAL-state declined-PR shortcut from firing on rerun (intent was to force orphan path detection).
+8. Second run: declined-PR detection fired anyway, this time via the LIVE `gitea_remote_pr_state` query path — which neither the prep nor my earlier mental model had accounted for. The script blocked re-promotion (correct P0-11 behavior). Reconciliation ledger entry written with full `remote_evidence`.
+
+**Evidence retained (out-of-tree, in `llm-wiki-state/`):**
+- `llm-wiki-state/audit/promotion-preview-d0cfb6c206e8.json` — initial-promote audit-preview from step 5.
+- `llm-wiki-state/ledger/reconciliation_d0cfb6c206e8_<timestamp>.json` — declined-PR detection ledger entry from step 8 with `reconciliation_source=gitea_remote_pr_state`.
+- The throwaway-Gitea PR #2 (closed) and its branch `auto/orphan-smoke-2026-05-04/d0cfb6c2` remain on the remote as evidence of the smoke; can be deleted via Gitea UI when the throwaway is next refreshed.
+
+**Side observation:** the throwaway Gitea's `main` branch sits at SHA `1e81ed8` (Phase 1.8). Phase 1.9 was the last time anything was pushed to it; local `main` has moved 6 commits ahead (now `09df90b`). Doesn't affect this smoke; documented for context if/when the throwaway is rebased or refreshed.
+
+**Orphan-recovery live smoke (P0-8) status:**
+- NOT exercised live in this smoke. The UI-close approach is structurally insufficient because closing leaves a closed-PR record on the remote, and the declined-PR check (P0-11) catches that before the orphan path is considered.
+- Bare-repo fixture (Phase 2.0, commit `752e9da`) covers the equivalence MATH against real git objects. The missing piece is real-API behavior of the orphan-detect query path (`Get-GiteaBranch` 200 + `Get-GiteaPullRequests state=open` empty + zero closed-PR records matching the branch alias).
+- Achievable via direct `git push` (token-bearing URL, no PR creation), then run promote. Deferred to a separate live smoke; queued as `engineering-prompts/07-orphan-path-live-smoke.md` for fresh-chat pickup tomorrow.
+
+**Limitations of this entry:**
+- The smoke used a literal `-ContextDigest` value rather than a real composite digest computed by `Run-Validator.ps1`. The reconciliation entry's `context_digest` field literally reads `smoke-orphan-2026-05-04`. Consequently the entry is NOT byte-for-byte representative of what production would produce; the structural shape is, but not the digest's correctness. Production runs always go through `Run-Validator.ps1` which computes the real digest.
+- Test count is unchanged at 428/428 (`--stage all`); this entry is operational evidence only, no code touched.
+- The `pipeline/provisional/orphan-smoke-2026-05-04.md` test article remains in the working tree (gitignored) and can be deleted at any time without affecting the smoke evidence.
+
+**Status:** Phase 2.1 closed (Items 4+5+6 implementation complete; live declined-PR smoke confirms one new live-API coverage area). Open Phase 2.x follow-ups: orphan-path live smoke (queued in prompt 07); Phase 2.2 documentation audit / TD-004 closure (queued in prompt 06).
+
 ---
 
 ## Decision Log
@@ -538,7 +576,7 @@ ADR-002 (Hybrid Deployment Model) remains active in principle: managed API is th
 
 | Metric | Phase 0 | Current |
 |--------|---------|---------|
-| **Tests passing** | 0 | 412/412 (`--stage all` exits 0; standalone counts: 59 parser + 225 validator + 31 promote-local + 55 promote-full = 370; integration runs only inside `--stage all`, contributes the remaining 42) |
+| **Tests passing** | 0 | 428/428 (`--stage all` exits 0; standalone counts: 59 parser + 225 validator + 31 promote-local + 53 promote-full + 6 fixtures = 374; integration runs only inside `--stage all`, contributes the remaining 54) |
 | **Source files** | 0 (design only) | 12 core runtime/test artifacts (parser, schemas/helpers, harness, production validator, runtime bootstrap, prompt, policy bundle) |
 | **Pipeline components** | 0 / 4 | 4 / 4 artifacts present (parser complete; production validator with live Anthropic provider; orchestration with credential-aware fallback; promotion preflight present) |
 | **Live provider** | — | Anthropic Claude Sonnet 4.6 (smoke-tested Phase 1.6: decision=`approve`, confidence `0.91`, ~8.2s end-to-end) |
@@ -562,4 +600,4 @@ ADR-002 (Hybrid Deployment Model) remains active in principle: managed API is th
 ---
 
 *Ledger maintained by: Josh Hillard*
-*Last updated: May 4, 2026 (ADR-005 — defer self-hosted leg to LATER)*
+*Last updated: May 4, 2026 (Phase 2.1 follow-up — Live declined-PR smoke against throwaway Gitea)*
