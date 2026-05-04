@@ -49,6 +49,7 @@ File layout assumption:
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -56,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -146,6 +148,98 @@ PARSE_IDENTITY_PATH = SCRIPT_DIR.parent / "parse_identity.py"
 PROMOTE_LOCAL_FIXTURE_REL = "approve/A-001-clean-article.md"
 _COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _BRANCH_ALIAS_PATTERN = re.compile(r"^auto/[A-Za-z0-9_\-]+/[0-9a-f]{8}$")
+
+
+# ---------------------------------------------------------------------------
+# Cleanup helpers (shared across all stages that create temp dirs)
+# ---------------------------------------------------------------------------
+
+
+# Module-level accumulator for cleanup failures.  Stages append (path, exc_str)
+# tuples here when _rmtree_with_retry exhausts its retries; main() prints a
+# single summary line at end-of-run rather than 11+ inline warnings.
+_failed_cleanups = []
+
+
+def _rmtree_with_retry(path, attempts=5, initial_delay_seconds=0.1):
+    """Remove a directory tree, retrying with exponential backoff.
+
+    Inspired by the PowerShell Invoke-RemoveDirectoryWithRetry in
+    Promote-ToVerified.ps1, but more generous in retry budget because the
+    Windows file-handle race here is typically antivirus-driven (Defender
+    scanning freshly-written .git/objects packs), and Defender can hold a
+    handle for 100ms to several seconds.  Backoff: 100ms, 200ms, 400ms,
+    800ms — 1.5s max total wait per cleanup before giving up.
+
+    Returns True on success or if the path is already gone.  Returns False
+    after exhausting retries; appends to _failed_cleanups for end-of-run
+    reporting (no inline warning -- avoids cluttering CI signal).  Pure
+    test-harness helper -- not used in production code paths.
+    """
+    last_exc = None
+    delay = initial_delay_seconds
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            return True
+        except FileNotFoundError:
+            return True  # already gone -- desired end state
+        except OSError as exc:
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+                delay *= 2
+    # Final check: OS may have released the handle between our last attempt
+    # and the existence check.
+    if not Path(path).exists():
+        return True
+    _failed_cleanups.append((str(path), str(last_exc)))
+    return False
+
+
+def _report_cleanup_failures():
+    """End-of-run summary + final-attempt sweep for leaked temp dirs.
+
+    Called once via atexit.  By the time this fires, all subprocess
+    descendants have exited, so any remaining lock on a temp dir is
+    purely antivirus-driven.  Wait briefly to let AV catch up, then
+    retry each leaked path once.  Print a single summary line only for
+    paths that STILL failed after the second-chance pass.
+    """
+    if not _failed_cleanups:
+        return
+
+    # Second-chance pass: subprocesses are all done, AV has had time to
+    # finish scanning.  1s wait is generous for typical Defender latency.
+    time.sleep(1.0)
+    still_failed = []
+    for path, _original_exc in _failed_cleanups:
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+        except FileNotFoundError:
+            pass  # already gone (someone else cleaned it)
+        except OSError as exc:
+            still_failed.append((path, str(exc)))
+
+    if not still_failed:
+        return  # Second-chance pass cleared everything; no warning needed.
+
+    n = len(still_failed)
+    paths_preview = ", ".join(p for p, _ in still_failed[:3])
+    if n > 3:
+        paths_preview += f", ... ({n - 3} more)"
+    print(
+        f"\nNote: {n} temp dir(s) could not be cleaned even after a "
+        f"second-chance pass (Windows file-handle race; typically AV "
+        f"scanning .git/objects).  Examples: {paths_preview}.  Manual "
+        f"cleanup recommended; orphans accumulate until removed.",
+        file=sys.stderr,
+    )
+
+
+# Register at import time so the summary fires on any sys.exit() path from
+# main() (and on uncaught exceptions during test harness execution).
+atexit.register(_report_cleanup_failures)
 
 
 _DETERMINISM_STRIP_FIELDS = frozenset({
@@ -1425,15 +1519,10 @@ def run_integration_tests(integration_fixtures):
                 if capture:
                     canonical_approve_run = run_data
         finally:
-            try:
-                shutil.rmtree(work_root, ignore_errors=False)
-            except OSError as exc:
-                # Windows can fail to remove files locked by subprocess descendants.
-                # Don't fail the stage on cleanup error - assertions are already done.
-                print(
-                    f"WARNING: cleanup of {work_root} failed: {exc}",
-                    file=sys.stderr,
-                )
+            # Windows can briefly hold file handles on freshly-written git pack
+            # files (antivirus); _rmtree_with_retry retries 3x with 200ms backoff
+            # before printing a warning.  Cleanup error never fails the stage.
+            _rmtree_with_retry(work_root)
 
     return all_results, None
 
@@ -2117,11 +2206,7 @@ def run_promote_local_tests():
             all_results.extend(_assert_idempotent_rerun("promote-local:rerun", second))
     finally:
         _cleanup_promote_local_worktrees(work_root)
-        try:
-            shutil.rmtree(work_root, ignore_errors=False)
-        except OSError as exc:
-            print(f"WARNING: cleanup of {work_root} failed: {exc}",
-                  file=sys.stderr)
+        _rmtree_with_retry(work_root)
 
     return all_results, None
 
@@ -2675,11 +2760,7 @@ def run_promote_full_tests():
             all_results.extend(assert_fn(label, run_data))
         finally:
             _cleanup_promote_local_worktrees(work_root)
-            try:
-                shutil.rmtree(work_root, ignore_errors=False)
-            except OSError as exc:
-                print(f"WARNING: cleanup of {work_root} failed: {exc}",
-                      file=sys.stderr)
+            _rmtree_with_retry(work_root)
 
     return all_results, None
 
