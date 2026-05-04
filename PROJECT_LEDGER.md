@@ -508,6 +508,30 @@
 **Trade-off:** The config and documentation were originally written around Vertex AI. Switching the config to `anthropic` is a clean break (context digests correctly invalidate), but documentation references to Vertex AI in the Strategy Kit now describe the intended future state rather than the current runtime. Adding Vertex AI later is a config change plus one new provider function.
 **Status:** Active
 
+### ADR-005: Defer self-hosted leg to LATER — Strategy Kit items 4f, 7b, 7c (May 4, 2026)
+**Decision:** Three Strategy Kit (Rev 3.4) roadmap items are formally re-sequenced from NOW/NEXT to LATER:
+- **4f** — Runtime parity harness (managed vs. self-hosted), originally NOW phase
+- **7b** — Self-hosted inference stack evaluation (vLLM / TGI / llama.cpp), originally NEXT phase
+- **7c** — Quantization evaluation matrix (FP16 / Q8 / Q4_K_M), originally NEXT phase
+
+ADR-002 (Hybrid Deployment Model) remains active in principle: managed API is the primary path, self-hosted is the long-term secondary path. In practice, the project has been managed-API-only since Phase 1.3 (ADR-004), and the managed path has matured through Phase 2.0 without exercising any self-hosted code paths. This ADR is the authoritative resequencing; the Strategy Kit itself is not edited (Rev 3.4 stays as the design baseline).
+
+**Why:** All three items presuppose self-hosted GPU infrastructure that does not exist for this project. Beginning them now would produce un-validated infrastructure code without near-term consumers. The Strategy Kit (April 6, 2026) sequenced them as NOW/NEXT under the assumption of parallel infrastructure provisioning; that assumption did not hold. Without (a) GPU access, (b) a specialized task that the managed model underperforms on, or (c) sustained managed-API spend that motivates cost reduction, beginning the self-hosted leg is premature. The hybrid model itself is the right architectural posture; activating its self-hosted leg is not the right next step.
+
+**Gating conditions to revisit (any one opens the gate):**
+- **G1 — Specialization need.** A validation task emerges where the managed model demonstrably underperforms (e.g., domain-specific classification where a fine-tuned open-weight model would dominate, identified via the LATER-phase Item 11 fine-tuning decision gate).
+- **G2 — Cost pressure.** Sustained managed-API spend reaches a level where self-hosted inference would have positive ROI after factoring in GPU lease + operations overhead. Threshold to be defined when relevant; no current data justifies a specific number.
+- **G3 — Infrastructure availability.** Self-hosted GPU infrastructure becomes available (dedicated machine with adequate VRAM, or sustained budget for cloud GPU rental).
+
+**Sequencing once a gate opens** (unchanged from Strategy Kit Part 7): 4b (model config — already complete) → 4f (parity harness) → 7b (serving stack selection) → 7c (quantization matrix) → 11 (fine-tuning decision gate) → 12/13 (LoRA / DPO).
+
+**Trade-off:**
+- **Document drift accepted, then formally tracked.** The Strategy Kit's NOW/NEXT framing lists items that are LATER in practice. TD-004 (documentation alignment) is updated to flag this for the next audit.
+- **Cost of deferral: zero.** None of these items were in active progress; no in-flight work is being abandoned.
+- **Cost of NOT deferring (alternative considered): high.** Building parity harness + serving stack tooling + quantization evaluation infrastructure without GPU access or near-term consumers is speculative work that would compound technical debt without producing validation against real load.
+
+**Status:** Active
+
 ---
 
 ## Cumulative Metrics
@@ -533,9 +557,9 @@
 | TD-001 | Live Anthropic provider path wired (Phase 1.3). Model-specific tokenizer implemented (Phase 1.5): `count_tokens_for_provider()` dispatches to Anthropic Messages API `count_tokens` endpoint when provider=anthropic and API key is available; falls back to conservative byte estimate (4 bytes/token) for stub provider or when SDK/key unavailable. Response reserve (2048 tokens) applied per Strategy Kit 7.2. Token overflow diagnostic now includes input count, budget, method used. | Low | Phase 0.6 | **Closed** (Phase 1.5) |
 | TD-002 | Live push + PR creation + tree-SHA equivalence (P0-8) all wired in Phase 1.9 / 03b. `Invoke-GitPushPromotion` pushes from the temp worktree using a one-shot token-bearing URL (token never persisted to `.git/config`) with defensive token-leak sweep + retry-with-backoff cleanup. `Test-RemoteTreeEquivalence` implements P0-8 via Option B (git fetch + `rev-parse {sha}^{tree}` + parent-SHA comparison). Main flow: existence check → declined-PR check → local-git → tree-SHA equivalence (orphan recovery) → push (or skip if equivalent) → PR creation → pending_pr write → audit rewrite → `promotion_completed` JSONL event → worktree cleanup → exit 0. Rollback decision tree: push-fail → cleanup + `PROMOTION_PUSH_FAILED`; PR-fail-after-push → `Remove-GiteaBranch` + cleanup + `PROMOTION_PR_FAILED`; pending-pr-write or audit-rewrite fail after PR success → forward + warn (PR is durable). `Invoke-StartupReconciliation` extended with worktree-orphan sweep (auto-cleans `%TEMP%\llm-wiki-promote-*` whose remote branch is absent). Integration stage F7 allowlist inverted (asserts 0 faults + structured `promotion_completed` event). Live smoke-tested 2026-04-27 against an external throwaway Gitea (clean publish + idempotent re-run scenarios; PR #1 created; 0 token leaks). | Medium | Phase 0.6 | **Closed** (Phase 1.9) |
 | TD-003 | `parse_identity.py` still resolves `file_path` via current working directory rather than deterministic repo-root-relative identity | Medium | Phase 0.6 | **Closed** (Phase 1.0) |
-| TD-004 | README drift was reduced on April 7, 2026, but documentation alignment still needs a broader audit across portfolio entry points | Low | Phase 0.6 | Open |
+| TD-004 | README drift was reduced on April 7, 2026, but documentation alignment still needs a broader audit across portfolio entry points. Phase 2.2 audit must also pick up the ADR-005 (May 4, 2026) resequencing of Strategy Kit items 4f / 7b / 7c into LATER — the Strategy Kit (Rev 3.4) still lists them in NOW/NEXT phases. | Low | Phase 0.6 | Open |
 
 ---
 
 *Ledger maintained by: Josh Hillard*
-*Last updated: May 4, 2026 (Phase 2.0 — Bare-repo fixture + tree-equivalence test coverage / P0-8 closure)*
+*Last updated: May 4, 2026 (ADR-005 — defer self-hosted leg to LATER)*

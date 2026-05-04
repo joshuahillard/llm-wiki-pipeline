@@ -173,3 +173,4 @@ The remaining work is grouped into three small follow-up phases, sequenced by ri
 ### Long-tail (tracked separately, not in any specific phase)
 
 - No LICENSE/CI/dependency manifest historically; `requirements.txt` was added at the public-push milestone (Phase 1.5).
+- **Self-hosted leg of the hybrid deployment model (ADR-002) is deferred to LATER per ADR-005 (May 4, 2026)**, with three named gating conditions (specialization need / cost pressure / infrastructure availability). Strategy Kit items 4f (parity harness), 7b (serving stack), and 7c (quantization matrix) sit behind that gate. The managed-API path (Anthropic, ADR-004) is the only active inference path until a gate opens.
